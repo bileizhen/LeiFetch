@@ -1,5 +1,6 @@
 package io.github.bileizhen.leifetch
 
+import android.app.Activity
 import android.app.Application
 import android.app.DownloadManager
 import android.content.*
@@ -66,6 +67,10 @@ class CaptureProvider : ContentProvider() {
 }
 
 class HookEntry : IXposedHookLoadPackage {
+    companion object {
+        // libxposed API 101 与 legacy 入口可能都被加载时，保证同一包只安装一次钩子。
+        private val handled = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+    }
     private val installed = Collections.newSetFromMap(ConcurrentHashMap<Method, Boolean>())
     private val executor = ThreadPoolExecutor(1, 1, 30, TimeUnit.SECONDS, ArrayBlockingQueue(32))
     private var context: Context? = null
@@ -74,12 +79,18 @@ class HookEntry : IXposedHookLoadPackage {
     @Volatile private var enabled = false
     @Volatile private var genericEnabled = true
     @Volatile private var firefoxEnabled = false
+    @Volatile private var systemEnabled = false
     private val probing = object : ThreadLocal<Boolean>() { override fun initialValue() = false }
+    private var lastUiRedirect = 0L
     private val genericActive get() = enabled && genericEnabled && probing.get() != true
     private val observeHeaders = setOf("authorization", "cookie", "user-agent", "referer", "accept", "accept-language")
 
-    override fun handleLoadPackage(p: XC_LoadPackage.LoadPackageParam) {
-        if (p.packageName == PKG || p.packageName == "android" || p.packageName == "com.android.systemui") return
+    override fun handleLoadPackage(p: XC_LoadPackage.LoadPackageParam) = handle(p.packageName, p.classLoader)
+
+    /** legacy 与 libxposed API 101 两个入口共用的安装逻辑。 */
+    fun handle(packageName: String, classLoader: ClassLoader) {
+        if (!handled.add(packageName)) return
+        if (packageName == PKG || packageName == "android" || packageName == "com.android.systemui") return
         XposedHelpers.findAndHookMethod(Application::class.java, "attach", Context::class.java, object : XC_MethodHook() {
             override fun afterHookedMethod(param: MethodHookParam) {
                 if (context != null) return
@@ -94,8 +105,9 @@ class HookEntry : IXposedHookLoadPackage {
                                 fun refresh() {
                                     val plugins = pref.getString("plugins", "generic").orEmpty().split(',')
                                     genericEnabled = "generic" in plugins
-                                    firefoxEnabled = "firefox" in plugins && p.packageName in setOf("org.mozilla.firefox", "org.mozilla.firefox_beta", "org.mozilla.fenix")
-                                    enabled = pref.getBoolean("enabled", false) && p.packageName in
+                                    firefoxEnabled = "firefox" in plugins && packageName in setOf("org.mozilla.firefox", "org.mozilla.firefox_beta", "org.mozilla.fenix")
+                                    systemEnabled = "system" in plugins && packageName in SystemDownloads.packages
+                                    enabled = pref.getBoolean("enabled", false) && packageName in
                                         pref.getString("packages", "").orEmpty().split(Regex("[\\s,;]+"))
                                 }
                                 preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
@@ -113,12 +125,17 @@ class HookEntry : IXposedHookLoadPackage {
                 }
             }
         })
+        // 系统下载器插件的两类进程只装专用钩子；通用钩子集中在提供器进程会与入队捕获重复。
+        if (packageName in SystemDownloads.packages) {
+            installSystemDownloads(packageName, classLoader)
+            return
+        }
         installDownloadManager()
         installWebView()
         listOf("org.mozilla.geckoview.GeckoSession", "okhttp3.RealCall", "okhttp3.internal.connection.RealCall",
             "com.android.okhttp.internal.huc.HttpURLConnectionImpl",
             "com.android.okhttp.internal.huc.HttpsURLConnectionImpl").forEach { name ->
-            runCatching { p.classLoader.loadClass(name) }.getOrNull()?.let(::installNetworkClass)
+            runCatching { classLoader.loadClass(name) }.getOrNull()?.let(::installNetworkClass)
         }
         XposedHelpers.findAndHookMethod(ClassLoader::class.java, "loadClass", String::class.java,
             Boolean::class.javaPrimitiveType, object : XC_MethodHook() {
@@ -151,6 +168,60 @@ class HookEntry : IXposedHookLoadPackage {
                     }.onFailure { log("DownloadManager", it) }
                 }
             })
+    }
+
+    // 系统下载器接管：提供器进程集中捕获 DownloadManager 入队，界面进程重定向下载列表入口。
+    private fun installSystemDownloads(packageName: String, classLoader: ClassLoader) {
+        if (packageName == SystemDownloads.UI) { installDownloadsUiTakeover(); return }
+        val provider = runCatching { classLoader.loadClass("${SystemDownloads.PROVIDER}.DownloadProvider") }
+            .onFailure { XposedBridge.log("LeiFetch 系统下载器：未找到 DownloadProvider，入队捕获未安装") }
+            .getOrNull() ?: return
+        XposedHelpers.findAndHookMethod(provider, "insert", Uri::class.java, ContentValues::class.java, object : XC_MethodHook() {
+            override fun afterHookedMethod(param: MethodHookParam) {
+                if (!enabled || !systemEnabled || param.hasThrowable()) return
+                runCatching {
+                    val values = param.args[1] as? ContentValues ?: return
+                    val request = SystemDownloads.insertRequest(values.getAsString("uri"),
+                        values.getAsString("title"), values.getAsString("hint")) ?: return
+                    // 通用插件已在入队应用内上报（可带请求头）时不重复捕获。
+                    if (coveredByGenericHook()) return
+                    queue { capture(request.first, emptyMap(), request.second, "系统下载器（原任务保留）") }
+                }.onFailure { log("系统下载器入队捕获", it) }
+            }
+        })
+        XposedBridge.log("LeiFetch 系统下载器：DownloadProvider.insert 钩子已安装")
+    }
+
+    /** 入队调用方（Binder 调用 uid）是否已被通用插件在自己的进程内接管上报。 */
+    private fun coveredByGenericHook(): Boolean {
+        if (!enabled || !genericEnabled) return false
+        val scoped = preferences?.getString("packages", "").orEmpty().split(Regex("[\\s,;]+")).toSet()
+        val callers = context?.packageManager?.getPackagesForUid(Binder.getCallingUid()).orEmpty()
+        return callers.any { it in scoped }
+    }
+
+    private fun installDownloadsUiTakeover() {
+        XposedHelpers.findAndHookMethod(Activity::class.java, "onCreate", Bundle::class.java, object : XC_MethodHook() {
+            override fun beforeHookedMethod(param: MethodHookParam) {
+                if (!enabled || !systemEnabled) return
+                val activity = param.thisObject as? Activity ?: return
+                val action = activity.intent?.action ?: return
+                if (action !in SystemDownloads.takeOverActions) return
+                runCatching {
+                    // TrampolineActivity 可能继续转发到 DownloadList，短窗口内只发起一次跳转。
+                    val now = SystemClock.elapsedRealtime()
+                    if (now - lastUiRedirect >= 1500) {
+                        lastUiRedirect = now
+                        activity.startActivity(Intent(Intent.ACTION_MAIN).setClassName(PKG, "$PKG.MainActivity")
+                            .addCategory(Intent.CATEGORY_LAUNCHER)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                            .putExtra("page", 1))
+                    }
+                    activity.finish()
+                }.onFailure { log("系统下载界面接管", it) }
+            }
+        })
+        XposedBridge.log("LeiFetch 系统下载器：下载界面入口接管已安装")
     }
 
     private fun installWebView() {
