@@ -520,8 +520,9 @@ private fun AboutContent(
                             )
                         }
                     }
-                    teamSections.forEach { section ->
-                        Spacer(Modifier.height(18.dp))
+                    teamSections.forEachIndexed { sectionIndex, section ->
+                        // 首个分组的标题正好落在首屏下沿、只露出半截；多留一段空白把它整体压到屏幕外。
+                        Spacer(Modifier.height(if (sectionIndex == 0) 40.dp else 18.dp))
                         SmallTitle(section.title, insideMargin = PaddingValues(horizontal = 20.dp, vertical = 8.dp))
                         section.members.forEachIndexed { index, member ->
                             AnimatedListItem(listState = lazyListState, hostKey = "about") {
