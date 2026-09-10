@@ -126,12 +126,15 @@ data class Task(
     val source: String = "手动", val state: String = "待确认",
     val done: Long = 0, val total: Long = -1, val speed: Long = 0,
     val created: Long = System.currentTimeMillis(), val finished: Long = 0,
-    val uri: String = "", val error: String = "", val tree: String = ""
+    val uri: String = "", val error: String = "", val tree: String = "",
+    /** 下载时所用的 GitHub 镜像站主机；空表示未走镜像（直连、非 GitHub 或未启用）。 */
+    val mirror: String = ""
 ) {
     fun json(): JSONObject = JSONObject().put("id", id).put("url", url).put("name", name)
         .put("headers", JSONObject(headers)).put("source", source).put("state", state)
         .put("done", done).put("total", total).put("speed", speed).put("created", created)
         .put("finished", finished).put("uri", uri).put("error", error).put("tree", tree)
+        .put("mirror", mirror)
 
     companion object {
         fun from(j: JSONObject): Task {
@@ -140,7 +143,8 @@ data class Task(
                 h.keys().asSequence().associateWith { h.getString(it) }, j.getString("source"),
                 j.getString("state"), j.optLong("done"), j.optLong("total", -1),
                 j.optLong("speed"), j.getLong("created"), j.optLong("finished"),
-                j.optString("uri"), j.optString("error"), j.optString("tree"))
+                j.optString("uri"), j.optString("error"), j.optString("tree"),
+                j.optString("mirror"))
         }
     }
 }

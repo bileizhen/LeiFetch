@@ -124,9 +124,21 @@ class GithubMirrorsTest {
     }
 
     @Test fun 未启用或非GitHub地址保持原样() = runBlocking {
-        assertEquals(release, GithubMirrors.resolve(release, enabled = false, pick = "auto", customRaw = ""))
-        assertEquals("https://example.com/a.apk",
-            GithubMirrors.resolve("https://example.com/a.apk", enabled = true, pick = "auto", customRaw = ""))
+        val off = GithubMirrors.resolve(release, enabled = false, pick = "auto", customRaw = "")
+        assertEquals(release, off.url)
+        assertEquals("", off.mirror)
+        val other = GithubMirrors.resolve("https://example.com/a.apk", enabled = true, pick = "auto", customRaw = "")
+        assertEquals("https://example.com/a.apk", other.url)
+        assertEquals("", other.mirror)
+    }
+
+    @Test fun 下载线路记录所用镜像() {
+        val mirror = "https://gh-proxy.com"
+        val route = GithubMirrors.Route(GithubMirrors.rewrite(release, mirror), mirror)
+        assertEquals(mirror, route.mirror)
+        assertEquals("$mirror/$release", route.url)
+        // 直连线路不带镜像
+        assertEquals("", GithubMirrors.Route(release).mirror)
     }
 
     // resolve = survey(下载地址) + chooseMirror + rewrite；镜像选择与重写为纯逻辑，此处直接组合验证。

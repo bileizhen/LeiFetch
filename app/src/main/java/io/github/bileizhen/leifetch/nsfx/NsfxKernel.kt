@@ -82,11 +82,14 @@ class NsfxKernel(private val context: Context, config: NsfxConfig, private val o
             withContext(Dispatchers.IO) { context.app.store.update(id) { it.copy(state = "失败", speed = 0, error = expired) } }
             return
         }
-        // GitHub 直链经镜像站加速：只改本次下载地址，存储的任务保持原始链接。
+        // GitHub 直链经镜像站加速：只改本次下载地址，存储的任务保持原始链接；记下所用镜像供详情页展示。
         val settings = context.app.settings.state.value
-        val effective = GithubMirrors.resolve(task.url, settings.githubMirror, settings.githubMirrorPick, settings.githubMirrors)
-        if (effective != task.url) android.util.Log.i("LeiFetch", "GitHub 镜像加速：${effective.substringBefore("/$task.url")}")
-        val active = if (effective == task.url) task else task.copy(url = effective)
+        val route = GithubMirrors.resolve(task.url, settings.githubMirror, settings.githubMirrorPick, settings.githubMirrors)
+        if (route.mirror.isNotEmpty()) android.util.Log.i("LeiFetch", "GitHub 镜像加速：${route.mirror}")
+        if (route.mirror != task.mirror) {
+            withContext(Dispatchers.IO) { context.app.store.update(id) { it.copy(mirror = route.mirror) } }
+        }
+        val active = if (route.url == task.url) task else task.copy(url = route.url)
         val file = engine.download(active,
             { done, total, speed -> context.app.store.update(id) { it.copy(done = done, total = total, speed = speed) } },
             { t -> context.app.telemetry.record(id, t.connections, t.pieceSize, t.fills, t.speed) })

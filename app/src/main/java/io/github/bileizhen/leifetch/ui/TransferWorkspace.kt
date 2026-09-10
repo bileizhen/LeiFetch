@@ -595,6 +595,9 @@ private fun InfoCard(task: Task, stats: TransferStatus) {
             StatCell("并行连接", "${if (stats.connections > 0) stats.connections else if (task.isTransferring()) 1 else 0} 个", Modifier.weight(1f))
         }
         DetailLine("类型", "HTTP 直链 · NSFX 内核")
+        // 镜像在下载开始时择优并记录；已完成任务的原始链接会被清除，无从判断是否直连。
+        if (task.mirror.isNotEmpty()) DetailLine("下载线路", "GitHub 镜像 · ${task.mirror.removePrefix("https://").removePrefix("http://")}")
+        else if (task.url.isNotEmpty() && GithubMirrors.isGithubUrl(task.url)) DetailLine("下载线路", "GitHub 直连")
         DetailLine("创建时间", DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(task.created)))
         if (completed) DetailLine("完成时间", DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(task.finished)))
         DetailLine("保存位置", displayTree(task.tree).ifEmpty { "应用内 downloads 目录" })

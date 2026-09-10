@@ -89,16 +89,20 @@ object GithubMirrors {
     /** 探测结果：首字节延迟与资源总长（取自 Content-Range）。 */
     data class Probe(val latencyMs: Long, val total: Long)
 
+    /** 下载线路：实际请求地址与所用镜像主机（未走镜像时 mirror 为空）。 */
+    data class Route(val url: String, val mirror: String = "")
+
     /**
-     * 下载开始前解析最终地址：并行探测各镜像与直连基准，取最快且内容一致者。
+     * 下载开始前解析下载线路：并行探测各镜像与直连基准，取最快且内容一致者。
      * 探测目标就是下载地址本身（Range 0-0），故规范 github.com 地址与签名 CDN 地址都能按
      * 镜像真实转发能力评估；全部不可用时保持原链接直连。
      */
-    suspend fun resolve(url: String, enabled: Boolean, pick: String, customRaw: String): String {
-        if (!enabled || !isGithubUrl(url)) return url
+    suspend fun resolve(url: String, enabled: Boolean, pick: String, customRaw: String): Route {
+        if (!enabled || !isGithubUrl(url)) return Route(url)
         val mirrors = effectiveList(customRaw)
         val (probes, direct) = survey(mirrors, url)
-        return chooseMirror(mirrors, pick, probes, direct)?.let { rewrite(url, it) } ?: url
+        val chosen = chooseMirror(mirrors, pick, probes, direct) ?: return Route(url)
+        return Route(rewrite(url, chosen), chosen)
     }
 
     /**
