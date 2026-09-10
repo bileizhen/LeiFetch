@@ -76,9 +76,16 @@ class NsfxKernel(private val context: Context, config: NsfxConfig, private val o
         val recovered = withContext(Dispatchers.IO) { publisher.recover(task) }
         if (recovered != null) { markComplete(id, recovered.first, recovered.second); return }
         withContext(Dispatchers.IO) { context.app.store.update(id) { it.copy(state = "下载中", speed = 0) } }
+        // GitHub release 会 302 到带约 1 小时时效签名的 CDN 地址；过期后再试只会得到 404，提前说明。
+        val expired = GithubMirrors.expiredAssetNotice(task.url)
+        if (expired != null) {
+            withContext(Dispatchers.IO) { context.app.store.update(id) { it.copy(state = "失败", speed = 0, error = expired) } }
+            return
+        }
         // GitHub 直链经镜像站加速：只改本次下载地址，存储的任务保持原始链接。
         val settings = context.app.settings.state.value
         val effective = GithubMirrors.resolve(task.url, settings.githubMirror, settings.githubMirrorPick, settings.githubMirrors)
+        if (effective != task.url) android.util.Log.i("LeiFetch", "GitHub 镜像加速：${effective.substringBefore("/$task.url")}")
         val active = if (effective == task.url) task else task.copy(url = effective)
         val file = engine.download(active,
             { done, total, speed -> context.app.store.update(id) { it.copy(done = done, total = total, speed = speed) } },
