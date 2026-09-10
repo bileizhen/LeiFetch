@@ -3,8 +3,12 @@
 // LeiFetch branding, local links, hardcoded Chinese strings.
 package io.github.bileizhen.leifetch.ui
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.os.Build
+import android.util.LruCache
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -31,6 +35,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -50,11 +55,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.positionInWindow
@@ -67,14 +75,17 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.bileizhen.leifetch.BuildConfig
 import io.github.bileizhen.leifetch.R
+import io.github.bileizhen.leifetch.StaggeredEntrance
 import io.github.bileizhen.leifetch.ui.component.miuix.effect.BgEffectBackground
 import io.github.bileizhen.leifetch.ui.component.miuix.effect.ColorBlendToken
 import io.github.bileizhen.leifetch.ui.theme.LocalDarkTheme
 import io.github.bileizhen.leifetch.ui.util.BlurredBar
 import io.github.bileizhen.leifetch.ui.util.rememberBlurBackdrop
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.withContext
+import java.net.HttpURLConnection
+import java.net.URL
+import kotlinx.coroutines.flow.onEach
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
@@ -433,10 +444,35 @@ private fun AboutContent(
                 )
             }
 
+            // 链接卡与名单同页连续排布；名单进入视口时才逐个弹出（视口判断用屏幕高度，首帧有效）。
+            val memberCard: @Composable (TeamMember) -> Unit = { member ->
+                Card(
+                    modifier = Modifier
+                        .padding(horizontal = 12.dp)
+                        .fillMaxWidth()
+                        .then(
+                            if (blurEnabled) {
+                                Modifier.textureBlur(
+                                    backdrop = backdrop,
+                                    shape = RoundedCornerShape(16.dp),
+                                    blurRadius = 60f,
+                                    colors = BlurColors(blendColors = blendColors),
+                                    enabled = true,
+                                )
+                            } else Modifier
+                        ),
+                    colors = CardDefaults.defaultColors(
+                        if (blurEnabled) Color.Transparent else colorScheme.surfaceContainer,
+                        Color.Transparent,
+                    ),
+                ) {
+                    MemberRow(member)
+                }
+            }
             item(key = "about") {
                 Column(
                     modifier = Modifier
-                        .fillParentMaxHeight()
+                        .fillMaxWidth()
                         .padding(bottom = innerPadding.calculateBottomPadding() + 12.dp),
                 ) {
                     Card(
@@ -467,6 +503,26 @@ private fun AboutContent(
                             )
                         }
                     }
+                    Spacer(Modifier.height(18.dp))
+                    SmallTitle("开发组", insideMargin = PaddingValues(horizontal = 20.dp, vertical = 8.dp))
+                    teamMembers.forEachIndexed { index, member ->
+                        StaggeredEntrance(index) {
+                            Column {
+                                memberCard(member)
+                                if (index < teamMembers.lastIndex) Spacer(Modifier.height(10.dp))
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(18.dp))
+                    SmallTitle("贡献者 · 内测", insideMargin = PaddingValues(horizontal = 20.dp, vertical = 8.dp))
+                    betaTesters.forEachIndexed { index, member ->
+                        StaggeredEntrance(index) {
+                            Column {
+                                memberCard(member)
+                                if (index < betaTesters.lastIndex) Spacer(Modifier.height(10.dp))
+                            }
+                        }
+                    }
                     Spacer(
                         Modifier.height(
                             WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() +
@@ -484,6 +540,73 @@ private fun licenses() = listOf(
     "GNU GPL v3" to "licenses/GPL-3.0.txt",
     "Miuix / AndroidX · Apache 2.0" to "licenses/Apache-2.0.txt",
 )
+
+// 开发组与贡献者（内测）名单：内容硬编码，头像按 QQ 号从腾讯头像 CDN 加载。
+private data class TeamMember(val qq: String, val name: String, val role: String)
+
+private val teamMembers = listOf(
+    TeamMember("3140014249", "bileizhen", "开发 · 设计 · 维护"),
+    TeamMember("2183396164", "加藤糊", "图标绘制"),
+    TeamMember("2536843865", "Hutao_felicity", "镜像站 · ghfile.geekertao.top · gh.dpik.top"),
+)
+
+private val betaTesters = listOf(
+    TeamMember("617498164", "ShiraM1zu", "内测用户"),
+    TeamMember("442259851", "KelierAndes", "内测用户"),
+    TeamMember("2468872022", "LinYe_2804", "内测用户"),
+    TeamMember("3022513812", "DiceSKY", "内测用户"),
+    TeamMember("165658800", "Matsuri", "内测用户"),
+)
+
+/** QQ 头像内存缓存；关于页每次打开最多加载几张 100 规格头像，无需落盘。
+ *  不同网络下各端点可用性不一（实测 headimg_dl 在部分网络 400），按序回退。 */
+private object QqAvatarCache {
+    private val cache = object : LruCache<String, Bitmap>(24) {
+        override fun sizeOf(key: String, value: Bitmap) = 1
+    }
+    private val endpoints = listOf(
+        "https://q1.qlogo.cn/g?b=qq&nk=%s&s=100",
+        "https://thirdqq.qlogo.cn/g?b=qq&nk=%s&s=100",
+        "https://q1.qlogo.cn/headimg_dl?dstuin=%s&spec=100",
+    )
+    suspend fun load(qq: String): Bitmap? {
+        cache.get(qq)?.let { return it }
+        return withContext(Dispatchers.IO) {
+            endpoints.firstNotNullOfOrNull { pattern ->
+                runCatching {
+                    val connection = URL(pattern.format(qq)).openConnection() as HttpURLConnection
+                    connection.connectTimeout = 5000
+                    connection.readTimeout = 5000
+                    connection.setRequestProperty("User-Agent",
+                        "Mozilla/5.0 (Linux; Android 16) LeiFetch/1.0")
+                    try {
+                        BitmapFactory.decodeStream(connection.inputStream)?.also { cache.put(qq, it) }
+                    } finally {
+                        connection.disconnect()
+                    }
+                }.getOrNull()
+            }
+        }
+    }
+}
+
+@Composable
+private fun QqAvatar(qq: String) {
+    val bitmap by produceState<Bitmap?>(null, qq) { value = QqAvatarCache.load(qq) }
+    Box(Modifier.padding(end = 6.dp).size(44.dp).clip(CircleShape)
+        .background(colorScheme.onSurface.copy(alpha = 0.06f)), contentAlignment = Alignment.Center) {
+        val loaded = bitmap
+        if (loaded != null) Image(loaded.asImageBitmap(), contentDescription = null,
+            contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+        else Text(qq.takeLast(2), fontSize = 12.sp, color = colorScheme.onSurfaceVariantSummary)
+    }
+}
+
+@Composable
+private fun MemberRow(member: TeamMember) {
+    BasicComponent(title = member.name, summary = member.role, startAction = { QqAvatar(member.qq) })
+}
+
 
 @Composable
 internal fun AboutDocumentScreen(privacy: Boolean, onBack: () -> Unit) {
