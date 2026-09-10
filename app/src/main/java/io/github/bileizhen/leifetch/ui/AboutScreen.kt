@@ -7,6 +7,9 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Build
 import android.util.LruCache
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -68,6 +71,7 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
@@ -457,7 +461,7 @@ private fun AboutContent(
                 )
             }
 
-            // 链接卡与名单同页连续排布；名单进入视口时才逐个弹出（视口判断用屏幕高度，首帧有效）。
+            // 链接卡与名单同页连续排布；名单每条按 ReactBits AnimatedList 的节奏弹入。
             val memberCard: @Composable (TeamMember, String) -> Unit = { member, group ->
                 Card(
                     modifier = Modifier
@@ -520,7 +524,7 @@ private fun AboutContent(
                         Spacer(Modifier.height(18.dp))
                         SmallTitle(section.title, insideMargin = PaddingValues(horizontal = 20.dp, vertical = 8.dp))
                         section.members.forEachIndexed { index, member ->
-                            StaggeredEntrance(index) {
+                            AnimatedListItem(listState = lazyListState, hostKey = "about") {
                                 Column {
                                     memberCard(member, section.title)
                                     if (index < section.members.lastIndex) Spacer(Modifier.height(10.dp))
@@ -664,6 +668,63 @@ private fun MemberRow(member: TeamMember, onClick: () -> Unit) {
         },
         onClick = onClick,
     )
+}
+
+/** ReactBits AnimatedList 的条目动效：条目自身超过一半进入屏幕后，从 scale 0.7 / 全透明
+ *  淡入到 1；离开视口复位，再滚回来会重播（对应其 useInView 的 amount 0.5 与 once: false）。
+ *  每条延时都是固定的 100ms，靠条目先后越过一半视口自然错开，而不是按序号累加延时。
+ *
+ *  可见性不能用 onGloballyPositioned 判断：滚动时 LazyColumn 只重新摆放已测量的条目、
+ *  不会重新布局，位置回调不再触发，屏幕外的条目会永远停在透明态。所以位置回调只用来记下
+ *  条目在宿主列表项内的偏移与自身高度（滚动中都是定值），可见比例改由滚动信息实时计算。 */
+@Composable
+private fun AnimatedListItem(
+    listState: LazyListState,
+    hostKey: String,
+    content: @Composable () -> Unit,
+) {
+    var offsetInHost by remember { mutableStateOf(0f) }
+    var heightPx by remember { mutableStateOf(0f) }
+
+    val inView by remember(listState, hostKey) {
+        derivedStateOf {
+            val layout = listState.layoutInfo
+            val host = layout.visibleItemsInfo.firstOrNull { it.key == hostKey }
+            if (host == null || heightPx <= 0f) {
+                false
+            } else {
+                val top = host.offset + offsetInHost
+                val visible = (top + heightPx).coerceAtMost(layout.viewportEndOffset.toFloat()) -
+                        top.coerceAtLeast(layout.viewportStartOffset.toFloat())
+                visible >= heightPx * 0.5f
+            }
+        }
+    }
+
+    Box(
+        Modifier.onGloballyPositioned { coordinates ->
+            offsetInHost = coordinates.positionInParent().y
+            heightPx = coordinates.size.height.toFloat()
+        }
+    ) {
+        val progress by animateFloatAsState(
+            targetValue = if (inView) 1f else 0f,
+            animationSpec = tween(
+                durationMillis = 200,
+                delayMillis = 100,
+                easing = FastOutSlowInEasing,
+            ),
+            label = "animatedListItem",
+        )
+        Box(
+            Modifier.graphicsLayer {
+                alpha = progress
+                val scale = 0.7f + 0.3f * progress
+                scaleX = scale
+                scaleY = scale
+            }
+        ) { content() }
+    }
 }
 
 /** 成员详情弹窗：头像、昵称、所属分组与分工；有 detail 的成员再补一段贡献说明。
