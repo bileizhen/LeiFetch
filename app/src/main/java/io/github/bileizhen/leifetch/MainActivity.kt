@@ -110,6 +110,43 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
     fun edit(change: (Config) -> Config) = work { app.settings.edit(change) }
+
+    // GitHub 镜像加速：测速结果与编辑操作。用 compose 状态而非 StateFlow，
+    // 镜像列表页要在 LazyColumn 内容层按延迟排序，需要快照订阅。
+    var mirrorResults by mutableStateOf<Map<String, Long?>>(emptyMap())
+        private set
+    var mirrorTesting by mutableStateOf(false)
+        private set
+    fun testMirrors(target: String = GithubMirrors.speedTestTarget) = viewModelScope.launch {
+        if (mirrorTesting) return@launch
+        mirrorTesting = true
+        mirrorResults = emptyMap()
+        try {
+            mirrorResults = GithubMirrors.measure(
+                GithubMirrors.effectiveList(app.settings.state.value.githubMirrors), target)
+        } finally { mirrorTesting = false }
+    }
+    fun selectMirror(mirror: String) = edit { it.copy(githubMirrorPick = mirror) }
+    fun addMirror(raw: String) = edit {
+        it.copy(githubMirrors = GithubMirrors.parseCustom(it.githubMirrors + "\n" + raw).joinToString("\n"))
+    }
+    fun removeMirror(mirror: String) = edit {
+        it.copy(githubMirrors = GithubMirrors.parseCustom(it.githubMirrors).filter { m -> m != mirror }.joinToString("\n"))
+    }
+
+    /** 通过 libxposed 服务向 LSPosed 申请作用域；结果以 Toast 提示（回调已回到主线程）。 */
+    fun requestScope(packages: List<String>) {
+        if (packages.isEmpty()) return
+        if (!XposedServiceClient.connected()) {
+            error.value = "LSPosed 服务未连接：请先在 LSPosed 启用 LeiFetch 并重新打开本应用，或手动勾选作用域"
+            return
+        }
+        error.value = "已发起作用域申请（${packages.size} 个），请在 LSPosed 弹窗中确认"
+        XposedServiceClient.requestScope(packages) { approved, failure ->
+            error.value = if (approved != null) "已授权 ${approved.size} 个作用域，重启相关应用后生效"
+            else "作用域授权未完成：${failure?.take(80) ?: "可在 LSPosed 中手动勾选"}"
+        }
+    }
     fun add(url: String, onAdded: () -> Unit = {}) = work {
         val u = Uri.parse(url.trim())
         require(u.scheme in setOf("http", "https") && !u.host.isNullOrEmpty()) { "请输入有效 HTTP(S) 下载地址" }
@@ -152,16 +189,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 }
 
 class MainActivity : ComponentActivity() {
+    // 系统下载器接管等外部入口指定落地页（1 = 下载页）；onNewIntent 时更新。
+    private var startPage by mutableStateOf(0)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        startPage = intent.getIntExtra("page", 0)
         handle(intent)
         setContent {
             val vm: MainViewModel = viewModel()
-            LeiFetchApp(vm)
+            LeiFetchApp(vm, startPage)
         }
     }
-    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); handle(intent) }
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent); setIntent(intent); handle(intent)
+        intent.getIntExtra("page", -1).takeIf { it >= 0 }?.let { startPage = it }
+    }
     private fun handle(intent: Intent) {
         val op = intent.getStringExtra("op") ?: return
         if (op !in setOf("open", "share")) return
@@ -201,7 +244,7 @@ private fun appDarkColors() = darkColorScheme(
 )
 
 @Composable
-private fun LeiFetchApp(vm: MainViewModel) {
+private fun LeiFetchApp(vm: MainViewModel, startPage: Int = 0) {
     val config by vm.config.collectAsStateWithLifecycle()
     val systemDark = isSystemInDarkTheme()
     val darkTheme = isDarkMode(config.colorMode, systemDark)
@@ -232,17 +275,22 @@ private fun LeiFetchApp(vm: MainViewModel) {
         LocalDarkTheme provides darkTheme,
         LocalDensity provides Density(density.density * config.scale, density.fontScale),
     ) {
-        MiuixTheme(controller = controller) { LeiFetchScreen(vm) }
+        MiuixTheme(controller = controller) { LeiFetchScreen(vm, startPage) }
     }
 }
 
 @Composable
-private fun LeiFetchScreen(vm: MainViewModel) {
+private fun LeiFetchScreen(vm: MainViewModel, startPage: Int = 0) {
     val tasks by vm.tasks.collectAsStateWithLifecycle()
     val config by vm.config.collectAsStateWithLifecycle()
     val error by vm.error.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var selectedPage by rememberSaveable { mutableIntStateOf(0) }
+    // 外部入口（系统下载器接管）指定落地页时切换一次，之后仍由用户自由导航。
+    var handledStartPage by rememberSaveable { mutableIntStateOf(Int.MIN_VALUE) }
+    LaunchedEffect(startPage) {
+        if (startPage in 1..3 && startPage != handledStartPage) { selectedPage = startPage; handledStartPage = startPage }
+    }
     var downloadFilter by rememberSaveable { mutableIntStateOf(0) }
     // SukiSU NavDisplay 模式：主标签共享一个根 entry，外观页压栈；重建后保持。
     var backStack by rememberSaveable { mutableStateOf(listOf(0)) }
@@ -270,7 +318,7 @@ private fun LeiFetchScreen(vm: MainViewModel) {
     }
     BoxWithConstraints(Modifier.fillMaxSize()) {
     val wideLayout = maxWidth >= 840.dp
-    val pages = listOf("仪表盘", "下载", "插件", "设置", "外观")
+    val pages = listOf("仪表盘", "下载", "插件", "设置", "外观", "GitHub 镜像")
     val icons = listOf(TransferIcons.Dashboard, TransferIcons.Download, TransferIcons.Plugins, TransferIcons.Settings)
     val usePredictiveBack = config.predictiveBack && Build.VERSION.SDK_INT >= 34
     val listStates = List(pages.size) { rememberLazyListState() }
@@ -289,8 +337,8 @@ private fun LeiFetchScreen(vm: MainViewModel) {
                         title = if (page == 0) "LeiFetch" else pages[page],
                         color = if (backdrop != null) Color.Transparent else surfaceColor,
                         scrollBehavior = scrollBehavior,
-                        navigationIcon = {
-                            if (page == 4) IconButton(onClick = { navigateBack() }) {
+                            navigationIcon = {
+                            if (page >= 4) IconButton(onClick = { navigateBack() }) {
                                 Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回", tint = MiuixTheme.colorScheme.onSurface)
                             }
                         },
@@ -376,8 +424,10 @@ private fun LeiFetchScreen(vm: MainViewModel) {
                         3 -> settingsItems(config, vm,
                             onOpenAppearance = { if (backStack.size == 1) backStack = backStack + 4 },
                             onOpenAbout = { if (backStack.size == 1) backStack = backStack + 5 },
+                            onOpenMirrors = { if (backStack.size == 1) backStack = backStack + 8 },
                             pickTree = { treePicker.launch(null) })
                         4 -> appearanceItems(config, vm)
+                        5 -> mirrorItems(config, vm)
                     }
                 }
             }
@@ -401,6 +451,7 @@ private fun LeiFetchScreen(vm: MainViewModel) {
                     }
                 }
                 entry(4) { pageContent(4, Modifier.fillMaxSize()) }
+                entry(8) { pageContent(5, Modifier.fillMaxSize()) }
                 entry(5) {
                     AboutScreenMiuix(
                         state = AboutUiState(),
@@ -447,7 +498,11 @@ private fun LazyListScope.pluginItems(config: Config, vm: MainViewModel) {
     item {
         Card {
             SuperSwitch(title = "下载接管", summary = "插件运行在 LSPosed 选中的目标应用内",
-                checked = config.enabled, onCheckedChange = { v -> vm.edit { it.copy(enabled = v) } })
+                checked = config.enabled, onCheckedChange = { v ->
+                    vm.edit { it.copy(enabled = v) }
+                    // 总开关打开时为已启用的固定作用域插件一次性申请（LSPosed 只弹一次确认）。
+                    if (v) vm.requestScope(HookPlugins.scopeRequestFor(config))
+                })
         }
     }
     item { SmallTitle("已安装插件", insideMargin = sectionTitleMargin) }
@@ -455,12 +510,16 @@ private fun LazyListScope.pluginItems(config: Config, vm: MainViewModel) {
         val on = plugin.id in HookPlugins.enabled(config.plugins)
         var expanded by rememberSaveable(plugin.id) { mutableStateOf(false) }
         Card {
-            SuperSwitch(title = plugin.name, summary = if (plugin.id == "generic") "捕获常见应用的下载请求" else "接管 Firefox 的公开文件下载", checked = on,
-                onCheckedChange = { value -> vm.edit { old ->
-                    val ids = HookPlugins.enabled(old.plugins).toMutableSet()
-                    if (value) ids.add(plugin.id) else ids.remove(plugin.id)
-                    old.copy(plugins = ids.sorted().joinToString(","))
-                } })
+            SuperSwitch(title = plugin.name, summary = plugin.blurb, checked = on,
+                onCheckedChange = { value ->
+                    vm.edit { old ->
+                        val ids = HookPlugins.enabled(old.plugins).toMutableSet()
+                        if (value) ids.add(plugin.id) else ids.remove(plugin.id)
+                        old.copy(plugins = ids.sorted().joinToString(","))
+                    }
+                    // 开启带固定作用域的插件时自动向 LSPosed 申请，免去手动勾选。
+                    if (value && plugin.packages.isNotEmpty()) vm.requestScope(plugin.packages.toList())
+                })
             BasicComponent(title = "应用范围与说明", summary = if (expanded) "收起配置" else "查看支持范围和接入方式",
                 onClick = { expanded = !expanded }, endActions = {
                     Icon(if (expanded) Icons.Rounded.KeyboardArrowUp else Icons.Rounded.KeyboardArrowDown, null,
@@ -470,8 +529,11 @@ private fun LazyListScope.pluginItems(config: Config, vm: MainViewModel) {
             Column(Modifier.padding(start = 20.dp, end = 20.dp, bottom = 18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(plugin.summary, fontSize = 13.sp, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
                 Text("内置插件 · v${plugin.version}", fontSize = 12.sp, color = MiuixTheme.colorScheme.primary)
-                if (plugin.packages.isNotEmpty()) Text("LSPosed 作用域：${plugin.packages.joinToString("、")}", fontSize = 12.sp)
-                else {
+                if (plugin.packages.isNotEmpty()) {
+                    Text("LSPosed 作用域：${plugin.packages.joinToString("、")}", fontSize = 12.sp)
+                    TextButton("申请 LSPosed 作用域", onClick = { vm.requestScope(plugin.packages.toList()) },
+                        modifier = Modifier.fillMaxWidth())
+                } else {
                     val packages = rememberTextFieldState(config.packages)
                     TextField(state = packages, label = "应用包名，用空格或逗号分隔", modifier = Modifier.fillMaxWidth())
                     TextButton("保存应用范围", onClick = { vm.edit { it.copy(packages = packages.text.toString()) } }, modifier = Modifier.fillMaxWidth())
@@ -480,7 +542,7 @@ private fun LazyListScope.pluginItems(config: Config, vm: MainViewModel) {
             }
         }
     }
-    item { Notice("开启插件后，在 LSPosed 中勾选对应应用并重启该应用。插件开关仅控制接管规则，不会自动更改 LSPosed 作用域。") }
+    item { Notice("开启插件或总开关时会自动向 LSPosed 申请所需作用域（需已在 LSPosed 启用 LeiFetch）；若弹窗未出现或被拒绝，可展开卡片重新申请，或到 LSPosed 手动勾选并重启目标应用。插件开关仅控制接管规则，不会自动更改 LSPosed 作用域。") }
 }
 
 @Composable
@@ -494,22 +556,22 @@ private fun SettingsIcon(icon: ImageVector) {
 }
 
 private fun LazyListScope.settingsItems(config: Config, vm: MainViewModel, onOpenAppearance: () -> Unit,
-                                        onOpenAbout: () -> Unit, pickTree: () -> Unit) {
+                                        onOpenAbout: () -> Unit, onOpenMirrors: () -> Unit, pickTree: () -> Unit) {
     item { SmallTitle("NSFX 下载内核", insideMargin = sectionTitleMargin) }
     item {
         Card {
             OverlaySpinnerPreference(title = "下载线程数", summary = "单任务并行连接数；不支持分段时自动单连接",
                 startAction = { SettingsIcon(Icons.Rounded.Download) },
-                items = (1..8).map { DropdownItem("$it 线程") }, selectedIndex = config.threads - 1,
+                items = (1..16).map { DropdownItem("$it 线程") }, selectedIndex = config.threads - 1,
                 onSelectedIndexChange = { index -> vm.edit { it.copy(threads = index + 1) } })
             OverlaySpinnerPreference(title = "同时下载任务数", summary = "内核参数在下载服务下次启动时生效",
                 startAction = { SettingsIcon(Icons.Rounded.CallToAction) },
                 items = (1..8).map { DropdownItem("$it 个任务") }, selectedIndex = config.maxTasks - 1,
                 onSelectedIndexChange = { index -> vm.edit { it.copy(maxTasks = index + 1) } })
             OverlaySpinnerPreference(title = "全局连接预算", startAction = { SettingsIcon(Icons.Rounded.Language) },
-                items = listOf(4, 8, 16, 32).map { DropdownItem("$it 个连接") },
-                selectedIndex = listOf(4, 8, 16, 32).indexOf(config.connections).coerceAtLeast(0),
-                onSelectedIndexChange = { index -> vm.edit { it.copy(connections = listOf(4, 8, 16, 32)[index]) } })
+                items = listOf(4, 8, 16, 32, 64).map { DropdownItem("$it 个连接") },
+                selectedIndex = listOf(4, 8, 16, 32, 64).indexOf(config.connections).coerceAtLeast(0),
+                onSelectedIndexChange = { index -> vm.edit { it.copy(connections = listOf(4, 8, 16, 32, 64)[index]) } })
             SwitchPreference(title = "NSFX 动态拆分", summary = "空闲线程接手缓慢尾段",
                 startAction = { SettingsIcon(Icons.Rounded.RocketLaunch) },
                 checked = config.dynamic, onCheckedChange = { v -> vm.edit { it.copy(dynamic = v) } })
@@ -526,6 +588,18 @@ private fun LazyListScope.settingsItems(config: Config, vm: MainViewModel, onOpe
                 startAction = { SettingsIcon(Icons.Rounded.Save) }, onClick = pickTree)
             SuperSwitch(title = "应用内保存", summary = "对新任务生效；卸载应用会删除应用内文件",
                 checked = config.tree.isEmpty(), onCheckedChange = { v -> if (v) vm.edit { it.copy(tree = "") } })
+        }
+    }
+    item { SmallTitle("GitHub 加速", insideMargin = sectionTitleMargin) }
+    item {
+        Card {
+            SuperSwitch(title = "镜像加速", summary = "自动识别 GitHub 直链下载，经镜像站转发",
+                startAction = { SettingsIcon(Icons.Rounded.Language) },
+                checked = config.githubMirror, onCheckedChange = { v -> vm.edit { it.copy(githubMirror = v) } })
+            ArrowPreference(title = "镜像站列表", summary = if (config.githubMirrorPick == "auto")
+                "自动选择最快 · 共 ${GithubMirrors.effectiveList(config.githubMirrors).size} 个镜像站"
+                else config.githubMirrorPick.removePrefix("https://").removePrefix("http://"),
+                startAction = { SettingsIcon(Icons.Rounded.Download) }, onClick = onOpenMirrors)
         }
     }
     item { SmallTitle("通知", insideMargin = sectionTitleMargin) }
