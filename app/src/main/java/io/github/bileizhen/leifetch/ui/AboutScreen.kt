@@ -83,7 +83,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.bileizhen.leifetch.BuildConfig
 import io.github.bileizhen.leifetch.R
-import io.github.bileizhen.leifetch.StaggeredEntrance
 import io.github.bileizhen.leifetch.ui.component.miuix.effect.BgEffectBackground
 import io.github.bileizhen.leifetch.ui.component.miuix.effect.ColorBlendToken
 import io.github.bileizhen.leifetch.ui.theme.LocalDarkTheme
