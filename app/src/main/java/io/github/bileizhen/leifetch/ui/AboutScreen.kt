@@ -599,6 +599,8 @@ private val betaTesters = listOf(
     TeamMember("442259851", "KelierAndes", "内测用户"),
     TeamMember("3022513812", "DiceSKY", "内测用户"),
     TeamMember("165658800", "Matsuri", "内测用户"),
+    TeamMember("1945826346", "Rcst20", "内测用户"),
+    TeamMember("2070526365", "zyemmmm", "内测用户"),
 )
 
 private val teamSections = listOf(
