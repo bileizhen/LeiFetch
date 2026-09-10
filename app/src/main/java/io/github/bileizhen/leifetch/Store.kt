@@ -26,7 +26,8 @@ data class Config(
     val packages: String = "", val colorMode: Int = 3,
     val maxTasks: Int = 3, val connections: Int = 16, val speedLimit: Long = 0, val dynamic: Boolean = true,
     val blur: Boolean = true, val floatingBar: Boolean = true, val liquidGlass: Boolean = true,
-    val predictiveBack: Boolean = true, val scale: Float = 1f, val plugins: String = "generic"
+    val predictiveBack: Boolean = true, val scale: Float = 1f, val plugins: String = "generic",
+    val githubMirror: Boolean = true, val githubMirrorPick: String = "auto", val githubMirrors: String = ""
 )
 
 class Settings(private val context: Context, scope: CoroutineScope) {
@@ -48,10 +49,14 @@ class Settings(private val context: Context, scope: CoroutineScope) {
     private val predictiveBack = booleanPreferencesKey("predictiveBack")
     private val scale = floatPreferencesKey("scale")
     private val plugins = stringPreferencesKey("plugins")
+    private val githubMirror = booleanPreferencesKey("githubMirror")
+    private val githubMirrorPick = stringPreferencesKey("githubMirrorPick")
+    private val githubMirrors = stringPreferencesKey("githubMirrors")
     private fun Preferences.read() = Config(
         p_threads(), p_tree(), p_notices(), p_fluid(), p_enabled(), p_packages(),
         p_colorMode(), p_maxTasks(), p_connections(), p_speedLimit(), p_dynamic(),
-        p_blur(), p_floatingBar(), p_liquidGlass(), p_predictiveBack(), p_scale(), this[plugins] ?: "generic"
+        p_blur(), p_floatingBar(), p_liquidGlass(), p_predictiveBack(), p_scale(), this[plugins] ?: "generic",
+        this[githubMirror] ?: true, this[githubMirrorPick] ?: "auto", this[githubMirrors] ?: ""
     )
     private fun Preferences.p_threads() = this[threads] ?: 4
     private fun Preferences.p_tree() = this[tree] ?: ""
@@ -86,7 +91,7 @@ class Settings(private val context: Context, scope: CoroutineScope) {
     suspend fun edit(change: (Config) -> Config) {
         context.dataStore.edit { p ->
             val next = change(p.read())
-            p[threads] = next.threads.coerceIn(1, 8)
+            p[threads] = next.threads.coerceIn(1, 16)
             p[tree] = next.tree
             p[notices] = next.notices
             p[fluid] = next.fluid
@@ -103,6 +108,9 @@ class Settings(private val context: Context, scope: CoroutineScope) {
             p[predictiveBack] = next.predictiveBack
             p[scale] = next.scale.coerceIn(0.8f, 1.1f)
             p[plugins] = next.plugins
+            p[githubMirror] = next.githubMirror
+            p[githubMirrorPick] = next.githubMirrorPick.trim()
+            p[githubMirrors] = next.githubMirrors.trim()
         }
     }
 }
@@ -162,8 +170,9 @@ class TaskStore(context: Context) : SQLiteOpenHelper(context, "tasks.db", null, 
     }
     @Synchronized fun update(id: String, change: (Task) -> Task) { get(id)?.let { put(change(it)) } }
     @Synchronized fun add(task: Task): Task {
+        // 忽略来源去重：同一入队可能先后被应用内钩子与系统下载器插件上报。
         val duplicate = tasks.value.firstOrNull {
-            it.url == task.url && it.headers == task.headers && it.source == task.source &&
+            it.url == task.url && it.headers == task.headers &&
                 it.state !in setOf("已完成", "已取消") && task.created - it.created < 60_000
         }
         if (duplicate != null) return duplicate
@@ -181,6 +190,7 @@ class LeiFetchApp : Application() {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     lateinit var store: TaskStore
     lateinit var settings: Settings
+    val telemetry = TransferTelemetryRegistry()
     val ready = CompletableDeferred<Unit>()
     override fun onCreate() {
         super.onCreate()

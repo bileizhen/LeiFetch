@@ -52,7 +52,7 @@ class NsfxKernel(private val context: Context, config: NsfxConfig, private val o
                                     headers = if (state == "已取消") emptyMap() else it.headers,
                                     url = if (state == "已取消") "" else it.url)
                             }
-                            if (state == "已取消") workDir(context, id).deleteRecursively()
+                            if (state == "已取消") { workDir(context, id).deleteRecursively(); context.app.telemetry.clear(id) }
                         }
                     }
                 }
@@ -76,9 +76,13 @@ class NsfxKernel(private val context: Context, config: NsfxConfig, private val o
         val recovered = withContext(Dispatchers.IO) { publisher.recover(task) }
         if (recovered != null) { markComplete(id, recovered.first, recovered.second); return }
         withContext(Dispatchers.IO) { context.app.store.update(id) { it.copy(state = "下载中", speed = 0) } }
-        val file = engine.download(task) { done, total, speed ->
-            context.app.store.update(id) { it.copy(done = done, total = total, speed = speed) }
-        }
+        // GitHub 直链经镜像站加速：只改本次下载地址，存储的任务保持原始链接。
+        val settings = context.app.settings.state.value
+        val effective = GithubMirrors.resolve(task.url, settings.githubMirror, settings.githubMirrorPick, settings.githubMirrors)
+        val active = if (effective == task.url) task else task.copy(url = effective)
+        val file = engine.download(active,
+            { done, total, speed -> context.app.store.update(id) { it.copy(done = done, total = total, speed = speed) } },
+            { t -> context.app.telemetry.record(id, t.connections, t.pieceSize, t.fills, t.speed) })
         val size = file.length()
         withContext(Dispatchers.IO) { context.app.store.update(id) { it.copy(state = "保存中", speed = 0) } }
         val uri = publisher.publish(task, file)

@@ -17,6 +17,8 @@ import java.net.URL
 import javax.net.ssl.SSLHandshakeException
 import java.util.concurrent.atomic.AtomicLong
 
+class EngineTelemetry(val connections: Int, val pieceSize: Long, val fills: ByteArray, val speed: Long)
+
 class NsfxDownloadEngine(private val context: Context, private val config: NsfxConfig,
                          private val http: NsfxHttpClient = NsfxHttpClient(config)) {
     private val hostFile = AtomicFile(File(context.filesDir, "nsfx-host-strategies.json"))
@@ -24,12 +26,13 @@ class NsfxDownloadEngine(private val context: Context, private val config: NsfxC
     private val hostHints = runCatching { JSONObject(String(hostFile.readFully())) }.getOrDefault(JSONObject())
     private val limiter = RateLimiter(config.globalSpeedLimit)
 
-    suspend fun download(task: Task, progress: (Long, Long, Long) -> Unit): File = withContext(Dispatchers.IO) {
+    suspend fun download(task: Task, progress: (Long, Long, Long) -> Unit,
+                         telemetry: (EngineTelemetry) -> Unit = {}): File = withContext(Dispatchers.IO) {
         val info = probe(task)
         val storage = NsfxStorage(workDir(context, task.id))
         if (!info.supportsRange || info.size <= 0 || info.etag.isEmpty()) {
             storage.reset()
-            return@withContext single(task, info, storage, progress)
+            return@withContext single(task, info, storage, progress, telemetry)
         }
         val (threads, count) = SegmentPlanner.calculate(info.size, config)
         val segments = storage.load(info) ?: run {
@@ -39,11 +42,13 @@ class NsfxDownloadEngine(private val context: Context, private val config: NsfxC
                 .also { storage.save(info, it) }
         }
         var concurrency = hostCap(info.url, threads)
+        val pieceSize = PiecePolicy.pieceSize(info.size)
+        telemetry(EngineTelemetry(concurrency, pieceSize, PiecePolicy.coverage(segments, info.size, pieceSize), 0))
         var round = 0
         val bytes = AtomicLong(segments.sumOf { it.downloaded })
         while (true) {
             try {
-                runSegments(task, info, storage, segments, concurrency, bytes, progress)
+                runSegments(task, info, storage, segments, concurrency, bytes, progress, telemetry, pieceSize)
                 break
             } catch (e: HttpFailure) {
                 if (e.status !in setOf(429, 503) || concurrency <= 1 || round++ >= 6) throw e
@@ -78,7 +83,7 @@ class NsfxDownloadEngine(private val context: Context, private val config: NsfxC
                         else -> throw HttpFailure(r.code)
                     }
                     val tag = r.header("ETag").orEmpty().trim().takeIf { it.startsWith('"') && it.endsWith('"') }.orEmpty()
-                    FileInfo(r.url, size, tag, r.code == 206)
+                    FileInfo(task.url, size, tag, r.code == 206)
                 }
                 if (info != null) return info
             } catch (e: IOException) {
@@ -90,7 +95,8 @@ class NsfxDownloadEngine(private val context: Context, private val config: NsfxC
     }
 
     private suspend fun runSegments(task: Task, info: FileInfo, storage: NsfxStorage, segments: MutableList<Segment>,
-                                    concurrency: Int, bytes: AtomicLong, progress: (Long, Long, Long) -> Unit) = supervisorScope {
+                                    concurrency: Int, bytes: AtomicLong, progress: (Long, Long, Long) -> Unit,
+                                    telemetry: (EngineTelemetry) -> Unit, pieceSize: Long) = supervisorScope {
         val workers = mutableMapOf<Int, Deferred<Unit>>()
         var lastBytes = bytes.get()
         var lastTime = System.nanoTime()
@@ -118,6 +124,8 @@ class NsfxDownloadEngine(private val context: Context, private val config: NsfxC
                 lastTime = now; lastBytes = current
                 if (now - lastReport >= 1_000_000_000) {
                     progress(current, info.size, smoothed.toLong()); lastReport = now
+                    telemetry(EngineTelemetry(workers.size, pieceSize,
+                        PiecePolicy.coverage(segments, info.size, pieceSize), smoothed.toLong()))
                 }
                 if (config.enableDynamicSegments && workers.size < concurrency && segments.none { it.remaining > 0 && it.index !in workers }) {
                     val snapshots = segments.filter { it.index in workers && it.remaining > 0 }.map {
@@ -153,9 +161,11 @@ class NsfxDownloadEngine(private val context: Context, private val config: NsfxC
                 val start = segment.start + segment.downloaded
                 val end = segment.end - 1
                 http.get(task, "bytes=$start-$end", info.etag).use { response ->
-                    if (response.code == 200) throw RangeFailure("RANGE_NOT_SUPPORTED：资源或 Range 行为已变化，请重试")
+                    // 签名 CDN(如腾讯 cdntips)每次请求都 302 到不同的边缘 URL,
+                    // 身份只认 ETag 与总长,请求已带 If-Range 兜底;200 即校验失败。
+                    if (response.code == 200) throw RangeFailure("RANGE_RESPONSE_INVALID：资源已变化")
                     if (response.code != 206) throw HttpFailure(response.code)
-                    if (parseRange(response.header("Content-Range"), start, end) != info.size || response.header("ETag") != info.etag || response.url != info.url) {
+                    if (parseRange(response.header("Content-Range"), start, end) != info.size || response.header("ETag") != info.etag) {
                         throw RangeFailure("RANGE_RESPONSE_INVALID：资源已变化")
                     }
                     requireIdentity(response)
@@ -197,7 +207,8 @@ class NsfxDownloadEngine(private val context: Context, private val config: NsfxC
         }
     }
 
-    private suspend fun single(task: Task, info: FileInfo, storage: NsfxStorage, progress: (Long, Long, Long) -> Unit): File {
+    private suspend fun single(task: Task, info: FileInfo, storage: NsfxStorage, progress: (Long, Long, Long) -> Unit,
+                               telemetry: (EngineTelemetry) -> Unit): File {
         if (info.size == 0L) { storage.partial.writeBytes(byteArrayOf()); progress(0, 0, 0); return storage.partial }
         var retries = 0
         while (true) {
@@ -209,7 +220,9 @@ class NsfxDownloadEngine(private val context: Context, private val config: NsfxC
                     var previous = 0L
                     var last = System.nanoTime()
                     val total = response.length
+                    val pieceSize = maxOf(1L, total)
                     progress(0, total, 0)
+                    telemetry(EngineTelemetry(1, pieceSize, ByteArray(1), 0))
                     response.stream.use { input ->
                         RandomAccessFile(storage.partial, "rw").use { out ->
                             out.setLength(0)
@@ -223,7 +236,10 @@ class NsfxDownloadEngine(private val context: Context, private val config: NsfxC
                                 out.write(buffer, 0, n); done += n
                                 val now = System.nanoTime()
                                 if (now - last > 1_000_000_000) {
-                                    progress(done, total, ((done - previous) * 1e9 / (now - last)).toLong())
+                                    val instant = ((done - previous) * 1e9 / (now - last)).toLong()
+                                    progress(done, total, instant)
+                                    telemetry(EngineTelemetry(1, pieceSize,
+                                        byteArrayOf(((done * 255) / pieceSize).coerceIn(0L, 255L).toByte()), instant))
                                     last = now; previous = done
                                 }
                             }

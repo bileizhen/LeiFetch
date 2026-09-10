@@ -90,6 +90,39 @@ class EngineTest {
             } finally { workDir(context, task.id).deleteRecursively() }
         }
     }
+    @Test fun rotatingSignedRedirectsStillDownloadAndResume() = runBlocking {
+        val counter = java.util.concurrent.atomic.AtomicInteger()
+        val s = MockWebServer()
+        s.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.path == "/jump") {
+                    val n = counter.incrementAndGet()
+                    return MockResponse().setResponseCode(302).setHeader("Location", "/edge-$n/data.apk?sign=token-$n")
+                }
+                val m = Regex("bytes=(\\d+)-(\\d+)").matchEntire(request.getHeader("Range")!!)!!
+                val a = m.groupValues[1].toInt(); val b = m.groupValues[2].toInt()
+                val r = MockResponse().setResponseCode(206).setHeader("ETag", "\"stable\"")
+                    .setHeader("Content-Range", "bytes $a-$b/${payload.size}")
+                    .setBody(Buffer().write(payload, a, b - a + 1))
+                if (a != 0 || b != 0) r.throttleBody(32 * 1024, 20, TimeUnit.MILLISECONDS)
+                return r
+            }
+        }
+        s.start()
+        s.use {
+            val task = Task(url = s.url("/jump").toString(), name = "sgame.apk")
+            try {
+                val engine = NsfxDownloadEngine(context, NsfxConfig(threads = 1, mode = "threads_only"))
+                val job = launch(Dispatchers.IO) { engine.download(task) { _, _, _ -> } }
+                delay(400); job.cancelAndJoin()
+                val checkpoint = java.io.File(workDir(context, task.id), "0.offset").readText().toLong()
+                assertTrue("transfer must survive differing redirect targets", checkpoint > 0)
+                assertTrue(counter.get() >= 2)
+                assertArrayEquals(payload, engine.download(task) { _, _, _ -> }.readBytes())
+                assertTrue(counter.get() >= 3)
+            } finally { workDir(context, task.id).deleteRecursively() }
+        }
+    }
     @Test fun liveNotificationHasPromotableCharacteristics() {
         if (android.os.Build.VERSION.SDK_INT >= 36) {
             val n = Notices.progress(context, Task(url = "https://example.invalid/a", name = "测试下载", done = 25, total = 100, state = "下载中"))

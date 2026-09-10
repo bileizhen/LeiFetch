@@ -1,14 +1,28 @@
 package io.github.bileizhen.leifetch
 
 import android.net.Uri
+import android.os.Build
+import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
@@ -25,19 +39,27 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathBuilder
 import androidx.compose.ui.graphics.vector.path
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.stateDescription
@@ -46,12 +68,16 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import top.yukonga.miuix.kmp.basic.*
 import top.yukonga.miuix.kmp.overlay.OverlayDialog
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import kotlinx.coroutines.delay
 import java.text.DateFormat
 import java.util.Date
 
@@ -345,20 +371,59 @@ internal fun LazyListScope.transferItems(tasks: List<Task>, vm: MainViewModel, f
             else -> "点右上角的加号，添加你的第一个链接。"
         }, onNew = if (query.isEmpty() && filter != 1) onNew else null)
     }
-    items(visible, key = { "transfer-${it.id}" }) { task ->
+    itemsIndexed(visible, key = { _, task -> "transfer-${task.id}" }) { index, task ->
         val context = LocalContext.current
-        TransferRow(task, expanded == task.id, onExpand = { onExpand(task.id) },
-            onPrimary = {
-                when {
-                    task.state == "已完成" -> fileAction(context, task, false)
-                    task.isTransferring() -> vm.control(task, false)
-                    task.canStart() -> vm.start(task.id)
-                    else -> onExpand(task.id)
-                }
-            }, onCancel = { vm.control(task, true) }, onDelete = {
-                if (task.state == "已取消") vm.delete(task) else onDelete(task.id)
-            })
+        // 分类切换时列表项淡入淡出并滑动到新位置，而不是瞬间替换。
+        Box(Modifier.animateItem()) {
+            StaggeredEntrance(index) {
+                TransferRow(task, expanded == task.id, onExpand = { onExpand(task.id) },
+                    onPrimary = {
+                        when {
+                            task.state == "已完成" -> fileAction(context, task, false)
+                            task.isTransferring() -> vm.control(task, false)
+                            task.canStart() -> vm.start(task.id)
+                            else -> onExpand(task.id)
+                        }
+                    }, onCancel = { vm.control(task, true) }, onDelete = {
+                        if (task.state == "已取消") vm.delete(task) else onDelete(task.id)
+                    })
+            }
+        }
     }
+}
+
+/** ReactBits Animated List 式入场（对应其 useInView）：条目进入视口后才按行序错峰弹出
+ *  （缩放 + 淡入 + 轻微上移）。首屏条目逐个显示；滚动进入的远端条目立即弹出，不拖慢滚动；
+ *  压栈页面传 baseDelayMs 避开 NavDisplay 转场，否则动画会在转场背后提前播完。 */
+@Composable
+internal fun StaggeredEntrance(index: Int, baseDelayMs: Long = 0, content: @Composable () -> Unit) {
+    var inView by remember { mutableStateOf(false) }
+    var appeared by remember { mutableStateOf(false) }
+    val configuration = LocalConfiguration.current
+    val density = LocalDensity.current
+    // 屏幕高度首帧即有效；略加前瞻让条目在临进视口时就开始弹出。
+    val viewportBottomPx = with(density) { configuration.screenHeightDp.dp.toPx() } + 64f
+    LaunchedEffect(inView) {
+        if (inView && !appeared) {
+            delay(baseDelayMs + if (index in 1..10) index * 110L else 0L)
+            appeared = true
+        }
+    }
+    val progress by animateFloatAsState(
+        targetValue = if (appeared) 1f else 0f,
+        animationSpec = tween(durationMillis = 380, easing = FastOutSlowInEasing),
+        label = "entrance")
+    Box(Modifier
+        .onGloballyPositioned { coords ->
+            if (!inView && coords.boundsInWindow().top < viewportBottomPx) inView = true
+        }
+        .graphicsLayer {
+            alpha = progress
+            val scale = 0.8f + 0.2f * progress
+            scaleX = scale
+            scaleY = scale
+            translationY = (1f - progress) * 22.dp.toPx()
+        }) { content() }
 }
 
 @Composable
@@ -367,26 +432,35 @@ private fun FilterBar(selected: Int, tasks: List<Task>, onSelect: (Int) -> Unit)
     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).selectableGroup(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         listOf("进行中", "已停止", "已完成", "全部").forEachIndexed { index, label ->
             val active = index == selected
+            // 选中态颜色平滑过渡，计数随选中淡入淡出，避免硬切。
+            val background by animateColorAsState(if (active) colors.primary else colors.surfaceContainer, label = "filterBg")
+            val foreground by animateColorAsState(if (active) colors.onPrimary else colors.onSurfaceVariantSummary, label = "filterFg")
             Row(Modifier.clip(RoundedCornerShape(12.dp))
-                .background(if (active) colors.primary else colors.surfaceContainer)
+                .background(background)
                 .selectable(active, role = Role.Tab, onClick = { onSelect(index) })
                 .padding(horizontal = 15.dp, vertical = 14.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(label, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = if (active) colors.onPrimary else colors.onSurfaceVariantSummary)
-                if (active) Text("${tasks.count { it.matchesFilter(index) }}", fontSize = 13.sp, color = colors.onPrimary.copy(alpha = .75f))
+                Text(label, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = foreground)
+                AnimatedVisibility(active, enter = fadeIn() + expandHorizontally(), exit = fadeOut() + shrinkHorizontally()) {
+                    Text("${tasks.count { it.matchesFilter(index) }}", fontSize = 13.sp, color = foreground.copy(alpha = .75f))
+                }
             }
         }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun TransferRow(task: Task, expanded: Boolean, onExpand: () -> Unit, onPrimary: () -> Unit,
     onCancel: () -> Unit, onDelete: () -> Unit) {
     val context = LocalContext.current
     val colors = MiuixTheme.colorScheme
+    var linkMenu by remember { mutableStateOf(false) }
     val ratio = if (task.total > 0) (task.done.toDouble() / task.total).toFloat().coerceIn(0f, 1f) else 0f
     val completed = task.state == "已完成"
     Card(Modifier.fillMaxWidth(), cornerRadius = 20.dp, insideMargin = PaddingValues(0.dp)) {
-        Column(Modifier.fillMaxWidth().clickable(role = Role.Button, onClickLabel = if (expanded) "收起详情" else "展开详情", onClick = onExpand)
+        Column(Modifier.fillMaxWidth().combinedClickable(role = Role.Button,
+            onClickLabel = if (expanded) "收起详情" else "展开详情", onLongClickLabel = "打开快捷菜单",
+            onLongClick = { linkMenu = true }, onClick = onExpand)
             .semantics { stateDescription = if (expanded) "已展开" else "已收起" }.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 IconTile(TransferIcons.File)
@@ -432,18 +506,37 @@ internal fun TransferRow(task: Task, expanded: Boolean, onExpand: () -> Unit, on
                 Text("原应用仍在下载。确认接管前，请先取消原任务。", fontSize = 12.sp,
                     color = colors.onSurfaceVariantSummary, modifier = Modifier.padding(top = 10.dp))
             }
+            if (linkMenu) {
+                // 长按快捷菜单：锚在卡片右上角的操作按钮附近；已取消任务的链接已清除，置灰提示。
+                Popup(alignment = Alignment.TopEnd,
+                    offset = with(LocalDensity.current) { IntOffset((-4).dp.roundToPx(), 52.dp.roundToPx()) },
+                    onDismissRequest = { linkMenu = false },
+                    properties = PopupProperties(focusable = true)) {
+                    Box(Modifier.clip(RoundedCornerShape(14.dp)).background(colors.surfaceContainer)
+                        .border(0.5.dp, colors.onSurface.copy(alpha = 0.08f), RoundedCornerShape(14.dp))
+                        .padding(5.dp)) {
+                        Text("复制下载链接", fontSize = 14.sp, fontWeight = FontWeight.Medium,
+                            color = if (task.url.isNotEmpty()) colors.onSurface else colors.onSurfaceVariantSummary.copy(alpha = 0.5f),
+                            maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.widthIn(max = 220.dp).clip(RoundedCornerShape(10.dp))
+                                .clickable(enabled = task.url.isNotEmpty()) {
+                                    context.getSystemService(android.content.ClipboardManager::class.java)
+                                        ?.setPrimaryClip(android.content.ClipData.newPlainText("下载链接", task.url))
+                                    // Android 13+ 系统会显示自己的复制提示，避免重复。
+                                    if (Build.VERSION.SDK_INT < 33)
+                                        Toast.makeText(context, "已复制下载链接", Toast.LENGTH_SHORT).show()
+                                    linkMenu = false
+                                }
+                                .padding(horizontal = 14.dp, vertical = 12.dp))
+                    }
+                }
+            }
         }
         AnimatedVisibility(expanded) {
             Column(Modifier.padding(start = 18.dp, end = 18.dp, bottom = 18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Hairline()
                 Text(task.name, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                DetailLine("传输", "${bytes(task.done)} / ${if (task.total > 0) bytes(task.total) else "大小未知"}")
-                if (task.isTransferring()) DetailLine("预计剩余", if (task.total > 0 && task.speed > 0)
-                    "${(task.total - task.done).coerceAtLeast(0) / task.speed} 秒" else "计算中")
-                DetailLine("创建时间", DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(task.created)))
-                if (completed) DetailLine("完成时间", DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(task.finished)))
-                DetailLine("保存位置", displayTree(task.tree).ifEmpty { "应用内 downloads 目录" })
-                if (task.url.isNotEmpty()) DetailLine("来源站点", Uri.parse(task.url).host ?: "未知来源")
+                TaskDetailTabs(task)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (completed) {
                         TextButton("打开", onClick = onPrimary, modifier = Modifier.weight(1f))
@@ -460,6 +553,158 @@ internal fun TransferRow(task: Task, expanded: Boolean, onExpand: () -> Unit, on
             }
         }
     }
+}
+
+/** 任务详情三视图:信息 / 分段点阵 / 速度曲线,数据来自内存遥测注册表。 */
+@Composable
+private fun TaskDetailTabs(task: Task) {
+    val stats by (LocalContext.current.applicationContext as LeiFetchApp).telemetry.flow(task.id).collectAsStateWithLifecycle()
+    var view by rememberSaveable(task.id) { mutableStateOf(0) }
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(Modifier.selectableGroup(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("信息", "分段", "速度").forEachIndexed { index, label ->
+                val active = index == view
+                Text(label, fontSize = 12.sp, fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium,
+                    color = if (active) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    modifier = Modifier.clip(RoundedCornerShape(10.dp))
+                        .background(if (active) MiuixTheme.colorScheme.primary.copy(alpha = .12f)
+                            else MiuixTheme.colorScheme.onSurface.copy(alpha = .05f))
+                        .selectable(active, role = Role.Tab, onClick = { view = index })
+                        .padding(horizontal = 14.dp, vertical = 8.dp))
+            }
+        }
+        when (view) {
+            0 -> InfoCard(task, stats)
+            1 -> PiecesCard(task, stats)
+            else -> SpeedCard(task, stats)
+        }
+    }
+}
+
+@Composable
+private fun InfoCard(task: Task, stats: TransferStatus) {
+    val completed = task.state == "已完成"
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            StatCell("传输", if (task.isTransferring()) "${bytes(task.speed)}/s" else if (completed) "已完成" else "待机", Modifier.weight(1f))
+            StatCell("剩余时间", if (task.isTransferring() && task.total > 0 && task.speed > 0)
+                "${(task.total - task.done).coerceAtLeast(0) / task.speed} 秒" else "—", Modifier.weight(1f))
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            StatCell("进度", if (task.total > 0) "${bytes(task.done)} / ${bytes(task.total)}" else bytes(task.done), Modifier.weight(1f))
+            StatCell("并行连接", "${if (stats.connections > 0) stats.connections else if (task.isTransferring()) 1 else 0} 个", Modifier.weight(1f))
+        }
+        DetailLine("类型", "HTTP 直链 · NSFX 内核")
+        DetailLine("创建时间", DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(task.created)))
+        if (completed) DetailLine("完成时间", DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(task.finished)))
+        DetailLine("保存位置", displayTree(task.tree).ifEmpty { "应用内 downloads 目录" })
+        if (task.url.isNotEmpty()) DetailLine("来源站点", Uri.parse(task.url).host ?: "未知来源")
+    }
+}
+
+@Composable
+private fun StatCell(label: String, value: String, modifier: Modifier = Modifier) {
+    Column(modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+        .background(MiuixTheme.colorScheme.onSurface.copy(alpha = .04f)).padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        MutedText(label, 11)
+        Text(value, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+    }
+}
+
+@Composable
+private fun PiecesCard(task: Task, stats: TransferStatus) {
+    if (stats.pieceSize <= 0L || stats.fills.isEmpty()) {
+        MutedText(if (task.state == "已完成") "任务已完成" else "开始下载后显示分段进度")
+        return
+    }
+    val colors = MiuixTheme.colorScheme
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val cell = 9.dp; val gap = 3.dp
+            val columns = maxOf(1, (maxWidth / (cell + gap)).toInt())
+            val rows = (stats.fills.size + columns - 1) / columns
+            Canvas(Modifier.fillMaxWidth().height(cell * rows + gap * (rows - 1).coerceAtLeast(0))
+                .semantics { contentDescription = "分段进度，${stats.donePieces}/${stats.fills.size} 片已完成" }) {
+                val cw = cell.toPx(); val g = gap.toPx(); val corner = CornerRadius(2f)
+                stats.fills.forEachIndexed { i, fill ->
+                    val x = (i % columns) * (cw + g); val y = (i / columns) * (cw + g)
+                    val level = fill.toInt() and 0xFF
+                    val fraction = level / 255f
+                    if (level >= 255) drawRoundRect(colors.primary, topLeft = Offset(x, y), size = Size(cw, cw), cornerRadius = corner)
+                    else {
+                        drawRoundRect(colors.onSurface.copy(alpha = .07f), topLeft = Offset(x, y), size = Size(cw, cw), cornerRadius = corner)
+                        if (level > 0) drawRoundRect(colors.primary.copy(alpha = .55f), topLeft = Offset(x, y + cw * (1 - fraction)),
+                            size = Size(cw, cw * fraction), cornerRadius = corner)
+                    }
+                }
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Box(Modifier.size(8.dp).clip(RoundedCornerShape(2.dp)).background(colors.primary))
+            MutedText("已下载 ${stats.donePieces}", 11)
+            Box(Modifier.size(8.dp).clip(RoundedCornerShape(2.dp)).background(colors.onSurface.copy(alpha = .12f)))
+            MutedText("未开始 ${stats.fills.size - stats.donePieces}", 11)
+        }
+        MutedText("每片 ${bytes(stats.pieceSize)} · 共 ${stats.fills.size} 片", 11)
+    }
+}
+
+@Composable
+private fun SpeedCard(task: Task, stats: TransferStatus) {
+    if (stats.history.isEmpty()) { MutedText("开始下载后记录速度曲线"); return }
+    var lifetime by rememberSaveable("${task.id}-speed") { mutableStateOf(false) }
+    val colors = MiuixTheme.colorScheme
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(Modifier.selectableGroup(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("会话 (60秒)" to false, "生命周期" to true).forEach { (label, mode) ->
+                val active = lifetime == mode
+                Text(label, fontSize = 12.sp, fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium,
+                    color = if (active) colors.primary else colors.onSurfaceVariantSummary,
+                    modifier = Modifier.clip(RoundedCornerShape(10.dp))
+                        .background(if (active) colors.primary.copy(alpha = .12f) else colors.onSurface.copy(alpha = .05f))
+                        .selectable(active, role = Role.Tab, onClick = { lifetime = mode })
+                        .padding(horizontal = 14.dp, vertical = 8.dp))
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            StatCell("当前", "${bytes(task.speed)}/s", Modifier.weight(1f))
+            StatCell("平均", "${bytes(stats.mean)}/s", Modifier.weight(1f))
+            StatCell("峰值", "${bytes(stats.peak)}/s", Modifier.weight(1f))
+            StatCell("活跃", formatDuration(stats.activeMs), Modifier.weight(1f))
+        }
+        val samples = if (lifetime) stats.history else stats.history.takeLast(60)
+        Canvas(Modifier.fillMaxWidth().height(96.dp).semantics { contentDescription = "速度曲线，共 ${samples.size} 个样本" }) {
+            val baseline = size.height - 2.dp.toPx()
+            val maximum = maxOf(samples.maxOf { it.speed }, stats.peak, 1024L)
+            repeat(3) { i ->
+                val y = baseline * i / 2f
+                drawLine(colors.onSurface.copy(alpha = .06f), Offset(0f, y), Offset(size.width, y), 1.dp.toPx())
+            }
+            val stripe = size.width / samples.size
+            samples.forEachIndexed { i, s ->
+                val h = (s.speed.toFloat() / maximum) * (baseline - 2.dp.toPx())
+                if (h > 0f) drawRect(colors.primary.copy(alpha = .85f),
+                    topLeft = Offset(i * stripe + stripe * .18f, baseline - h), size = Size(stripe * .64f, h))
+            }
+            val dashes = PathEffect.dashPathEffect(floatArrayOf(8f, 6f))
+            listOf(stats.peak, stats.mean).forEach { v ->
+                if (v > 0) {
+                    val y = baseline - (v.toFloat() / maximum) * (baseline - 2.dp.toPx())
+                    drawLine(colors.onSurfaceVariantSummary.copy(alpha = .4f), Offset(0f, y), Offset(size.width, y), 1.dp.toPx(), pathEffect = dashes)
+                }
+            }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            MutedText(DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(samples.first().time)), 10)
+            MutedText(DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(samples.last().time)), 10)
+        }
+    }
+}
+
+private fun formatDuration(ms: Long): String {
+    val total = ms / 1000
+    return if (total < 60) "$total 秒" else "%d 分 %02d 秒".format(total / 60, total % 60)
 }
 
 @Composable

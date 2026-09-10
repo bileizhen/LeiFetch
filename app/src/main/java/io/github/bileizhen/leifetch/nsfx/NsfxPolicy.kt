@@ -86,3 +86,37 @@ object NsfxRetryPolicy {
     fun maxRetries(configured: Int) = (if (configured < 1) 32 else configured).coerceIn(1, 32)
     val permanentHttp = setOf(400, 401, 403, 404, 405, 410, 416, 451)
 }
+
+/** Motrix 式分段点阵:固定片宽、按覆盖度填充,供任务详情的分段视图使用。 */
+object PiecePolicy {
+    fun pieceSize(size: Long): Long {
+        var piece = 1L shl 20
+        if (size <= 0) return piece
+        while ((size + piece - 1) / piece > 2048) piece = piece shl 1
+        return piece
+    }
+
+    /** 每片覆盖度 0..255。每个分段的已下载部分总是从 start 起的连续前缀。 */
+    fun coverage(segments: List<Segment>, size: Long, pieceSize: Long): ByteArray {
+        if (size <= 0 || pieceSize <= 0) return ByteArray(0)
+        val count = ((size + pieceSize - 1) / pieceSize).toInt()
+        val covered = LongArray(count)
+        for (segment in segments) {
+            var piece = (segment.start / pieceSize).toInt()
+            var offset = segment.start % pieceSize
+            var remaining = segment.downloaded.coerceAtLeast(0)
+            while (remaining > 0 && piece < count) {
+                val take = minOf(pieceSize - offset, remaining)
+                covered[piece] += take
+                remaining -= take
+                offset = 0
+                piece++
+            }
+        }
+        // 末片的实际跨度小于片宽,按实际跨度归一化,避免文件下完后尾片仍显示半满。
+        return ByteArray(count) { i ->
+            val span = minOf(pieceSize, size - i * pieceSize)
+            ((covered[i] * 255) / span).toInt().coerceIn(0, 255).toByte()
+        }
+    }
+}
