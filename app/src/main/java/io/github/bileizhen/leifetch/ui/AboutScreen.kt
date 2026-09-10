@@ -543,7 +543,7 @@ private fun AboutContent(
             }
         }
 
-        MemberDetailDialog(focus = shownFocus.value, onDismiss = { selected = null })
+        MemberDetailDialog(show = selected != null, focus = shownFocus.value, onDismiss = { selected = null })
     }
 }
 
@@ -646,12 +646,12 @@ private fun MemberRow(member: TeamMember, onClick: () -> Unit) {
     )
 }
 
-/** 成员详情弹窗：头像、昵称、所属分组、分工与 QQ 号，QQ 号可复制。 */
+/** 成员详情弹窗：头像、昵称、所属分组、分工与 QQ 号，QQ 号可复制。
+ *  show 与 focus 分开传：关闭后 focus 仍保留最后一次选择，供退场动画期间继续渲染内容。 */
 @Composable
-private fun MemberDetailDialog(focus: MemberFocus?, onDismiss: () -> Unit) {
+private fun MemberDetailDialog(show: Boolean, focus: MemberFocus?, onDismiss: () -> Unit) {
     val context = LocalContext.current
-    OverlayDialog(show = focus != null, title = "成员信息", onDismissRequest = onDismiss) {
-        // 退场动画期间 focus 已置空，这里保留最后一次选择，避免内容闪空。
+    OverlayDialog(show = show, title = "成员信息", onDismissRequest = onDismiss) {
         focus?.let { current ->
             Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                 QqAvatar(current.member.qq, size = 76.dp, spec = 640)
