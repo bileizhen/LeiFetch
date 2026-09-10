@@ -3,14 +3,10 @@
 // LeiFetch branding, local links, hardcoded Chinese strings.
 package io.github.bileizhen.leifetch.ui
 
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Build
 import android.util.LruCache
-import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -73,7 +69,6 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.positionInWindow
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.painterResource
@@ -554,7 +549,13 @@ private fun licenses() = listOf(
 )
 
 // 开发组与贡献者（内测）名单：内容硬编码，头像按 QQ 号从腾讯头像 CDN 加载。
-private data class TeamMember(val qq: String, val name: String, val role: String)
+// detail 只写给需要补充贡献说明的成员，详情弹窗里有则多渲染一段。
+private data class TeamMember(
+    val qq: String,
+    val name: String,
+    val role: String,
+    val detail: String? = null,
+)
 
 /** 名单分组；分组标题随成员一起记下，详情弹窗里显示所属分组。 */
 private data class TeamSection(val title: String, val members: List<TeamMember>)
@@ -563,10 +564,29 @@ private data class TeamSection(val title: String, val members: List<TeamMember>)
 private data class MemberFocus(val member: TeamMember, val group: String)
 
 private val teamMembers = listOf(
-    TeamMember("3140014249", "bileizhen", "开发 · 设计 · 维护"),
+    TeamMember(
+        qq = "3140014249",
+        name = "bileizhen",
+        role = "开发 · 设计 · 维护",
+        detail = listOf(
+            "LeiFetch 的作者与技术设计者：从 NSFX 下载内核的移植到整套界面都由他独立完成，" +
+                    "并负责长期的设计、维护与发布。",
+            "",
+            "· 内核：NSFX 内核 Kotlin 移植，16 线程、动态尾段拆分、断点跨会话续传、指数退避",
+            "· 接管：LSPosed 通用捕获（DownloadManager / OkHttp / WebView）、Firefox 适配、系统下载器插件",
+            "· 加速：GitHub 镜像前置转发，用下载地址并行测速，校验 206 与文件总长后择优",
+            "· 界面：Miuix + Compose 全套 UI 与动效、分段点阵与速度曲线、实时卡片",
+            "· 双入口：legacy Xposed 93 与 libxposed API 101，作用域自动申请；数据只存本机，无遥测",
+        ).joinToString("\n"),
+    ),
     TeamMember("2468872022", "LinYe_2804", "开发"),
     TeamMember("2183396164", "加藤糊", "图标绘制"),
-    TeamMember("2536843865", "Hutao_felicity", "镜像站 · ghfile.geekertao.top · gh.dpik.top"),
+    TeamMember(
+        qq = "2536843865",
+        name = "Hutao_felicity",
+        role = "镜像站",
+        detail = "本应用内置的 GitHub 下载加速镜像站 ghfile.geekertao.top 与 gh.dpik.top，均由他搭建。",
+    ),
 )
 
 private val betaTesters = listOf(
@@ -646,11 +666,10 @@ private fun MemberRow(member: TeamMember, onClick: () -> Unit) {
     )
 }
 
-/** 成员详情弹窗：头像、昵称、所属分组、分工与 QQ 号，QQ 号可复制。
+/** 成员详情弹窗：头像、昵称、所属分组与分工；有 detail 的成员再补一段贡献说明。
  *  show 与 focus 分开传：关闭后 focus 仍保留最后一次选择，供退场动画期间继续渲染内容。 */
 @Composable
 private fun MemberDetailDialog(show: Boolean, focus: MemberFocus?, onDismiss: () -> Unit) {
-    val context = LocalContext.current
     OverlayDialog(show = show, title = "成员信息", onDismissRequest = onDismiss) {
         focus?.let { current ->
             Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -662,14 +681,17 @@ private fun MemberDetailDialog(show: Boolean, focus: MemberFocus?, onDismiss: ()
                 HorizontalDivider(Modifier.padding(vertical = 16.dp),
                     color = colorScheme.onSurface.copy(alpha = 0.08f))
                 MemberInfoRow("分工", current.member.role)
-                MemberInfoRow("QQ", current.member.qq)
             }
-            Row(modifier = Modifier.fillMaxWidth().padding(top = 18.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                TextButton("复制 QQ 号", onClick = { copyText(context, "QQ 号", current.member.qq) },
-                    modifier = Modifier.weight(1f))
-                TextButton("关闭", onClick = onDismiss, modifier = Modifier.weight(1f))
+            current.member.detail?.let { detail ->
+                // 详情可能有多行（作者的贡献说明是分条的），限高后可滚动，不挤走下面的关闭按钮。
+                Text(detail, fontSize = 13.sp, lineHeight = 21.sp,
+                    color = colorScheme.onSurface,
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 300.dp)
+                        .verticalScroll(rememberScrollState())
+                        .padding(top = 12.dp))
             }
+            TextButton("关闭", onClick = onDismiss,
+                modifier = Modifier.fillMaxWidth().padding(top = 18.dp))
         }
     }
 }
@@ -682,13 +704,6 @@ private fun MemberInfoRow(label: String, value: String) {
             modifier = Modifier.width(48.dp))
         Text(value, fontSize = 13.sp, modifier = Modifier.weight(1f))
     }
-}
-
-/** Android 13+ 系统自带复制提示，早期版本自己弹一个。 */
-private fun copyText(context: Context, label: String, value: String) {
-    context.getSystemService(ClipboardManager::class.java)
-        ?.setPrimaryClip(ClipData.newPlainText(label, value))
-    if (Build.VERSION.SDK_INT < 33) Toast.makeText(context, "已复制$label", Toast.LENGTH_SHORT).show()
 }
 
 
