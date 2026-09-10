@@ -8,3 +8,7 @@ docs/
 lsp/
 tools/
 build-local.ps1
+
+# release signing (never commit)
+leifetch-release.jks
+keystore.properties
