@@ -134,6 +134,7 @@ class AboutUiState {
     val links: List<AboutLink> = listOf(
         AboutLink("GitHub", "https://github.com/bileizhen/LeiFetch"),
         AboutLink("NSFX 下载核心", "https://github.com/buaoyezz/Hanabi-Download-Manager-X"),
+        AboutLink("QQ 交流群", "https://qm.qq.com/q/ljvhVqrXCU"),
         AboutLink("开源许可", "leifetch:licenses"),
         AboutLink("隐私", "leifetch:privacy"),
     )

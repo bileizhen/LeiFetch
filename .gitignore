@@ -12,3 +12,6 @@ build-local.ps1
 # release signing (never commit)
 leifetch-release.jks
 keystore.properties
+
+# 打包产物经 GitHub Releases 分发，不入库
+*.apk
