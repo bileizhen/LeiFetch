@@ -16,6 +16,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -48,6 +49,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -58,7 +60,6 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewModelScope
-import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.runtime.rememberSaveableStateHolderNavEntryDecorator
 import androidx.navigation3.ui.NavDisplay
@@ -147,13 +148,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             else "作用域授权未完成：${failure?.take(80) ?: "可在 LSPosed 中手动勾选"}"
         }
     }
-    fun add(url: String, onAdded: () -> Unit = {}) = work {
+    /** 剪贴板下载链接识别：等待数据就绪后读取剪贴板，发现链接时供弹窗询问是否下载。 */
+    val clipboardSuggest = MutableStateFlow<String?>(null)
+    private var clipboardSuggested = ""
+    fun checkClipboard() = viewModelScope.launch {
+        if (clipboardSuggest.value != null) return@launch
+        app.ready.await()
+        if (!config.value.clipboardDetect) return@launch
+        val cm = app.getSystemService(ClipboardManager::class.java) ?: return@launch
+        // Android 10+ 仅允许有焦点的窗口读取剪贴板；调用方在获得焦点时触发，
+        // 但刚获得焦点的一瞬仍可能读到 null（焦点竞态），短暂重试几次。
+        var text: String? = null
+        for (attempt in 1..4) {
+            text = runCatching {
+                cm.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(app)?.toString()
+            }.getOrNull()
+            if (!text.isNullOrEmpty()) break
+            if (attempt < 4) delay(200)
+        }
+        val url = clipboardUrl(text ?: "") ?: return@launch
+        // 同一链接一次前台会话只提示一次；已在任务列表中的活跃链接也不再询问。
+        if (url == clipboardSuggested) return@launch
+        clipboardSuggested = url
+        if (app.store.tasks.value.any { it.url == url && it.state !in setOf("已完成", "已取消") }) return@launch
+        clipboardSuggest.value = url
+    }
+    /** 退到后台后重置提示去重：再次打开应用时，剪贴板里仍是未入库的链接就继续询问。 */
+    fun rearmClipboard() { clipboardSuggested = "" }
+    fun add(url: String, onAdded: (Task) -> Unit = {}) = work {
         val u = Uri.parse(url.trim())
         require(u.scheme in setOf("http", "https") && !u.host.isNullOrEmpty()) { "请输入有效 HTTP(S) 下载地址" }
-        withContext(Dispatchers.IO) {
+        val task = withContext(Dispatchers.IO) {
             app.store.add(Task(url = url.trim(), name = safeName(u.lastPathSegment ?: "download.bin"), tree = config.value.tree))
         }
-        onAdded()
+        onAdded(task)
     }
     fun start(id: String) = work {
         ContextCompat.startForegroundService(app, Intent(app, DownloadService::class.java).putExtra("id", id).putExtra("op", "start"))
@@ -191,15 +219,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 class MainActivity : ComponentActivity() {
     // 系统下载器接管等外部入口指定落地页（1 = 下载页）；onNewIntent 时更新。
     private var startPage by mutableStateOf(0)
+    // internal：androidTest（friend module）端到端测试需要读取剪贴板提示状态。
+    internal val vm by viewModels<MainViewModel>()
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         startPage = intent.getIntExtra("page", 0)
         handle(intent)
         setContent {
-            val vm: MainViewModel = viewModel()
             LeiFetchApp(vm, startPage)
         }
+    }
+    // onWindowFocusChanged(true) 晚于 onResume，是 Android 10+ 剪贴板可读的最早可靠时机。
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) vm.checkClipboard()
+    }
+    override fun onStop() {
+        super.onStop()
+        vm.rearmClipboard()
     }
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent); setIntent(intent); handle(intent)
@@ -215,6 +253,19 @@ class MainActivity : ComponentActivity() {
             app.store.get(id)?.takeIf { it.state == "已完成" }?.let { fileAction(this@MainActivity, it, op == "share") }
         }
     }
+}
+
+// 限定 URL 合法字符集，剪贴板文本里紧跟链接的中文说明不会被吞进匹配结果。
+private val clipboardUrlPattern =
+    Regex("""https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+""", RegexOption.IGNORE_CASE)
+
+/** 从剪贴板文本提取第一个有效的 HTTP(S) 链接；没有则返回 null。 */
+private fun clipboardUrl(text: String): String? {
+    val url = clipboardUrlPattern.find(text)?.value
+        ?.trimEnd('.', ',', ';', ':', '(', ')', '"', '\'', '，', '。', '；', '：', '）', '”', '」', '》')
+        ?: return null
+    val uri = Uri.parse(url)
+    return if (uri.scheme in setOf("http", "https") && !uri.host.isNullOrBlank()) url else null
 }
 
 fun fileAction(context: Context, task: Task, share: Boolean) {
@@ -478,6 +529,26 @@ private fun LeiFetchScreen(vm: MainViewModel, startPage: Int = 0) {
         val deleting = tasks.firstOrNull { it.id == confirmDelete }
         NewDownloadDialog(showNewDownload, onDismiss = { showNewDownload = false },
             onAdd = { url -> vm.add(url) { showNewDownload = false; selectedPage = 1; downloadFilter = 0 } })
+        val clipLink by vm.clipboardSuggest.collectAsStateWithLifecycle()
+        SuperDialog(show = clipLink != null, title = "发现下载链接", onDismissRequest = { vm.clipboardSuggest.value = null }) {
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Text("剪贴板中发现了下载链接，是否添加下载任务？", fontSize = 14.sp)
+                Text(clipLink.orEmpty(), fontSize = 13.sp, maxLines = 3, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                        .background(MiuixTheme.colorScheme.onSurface.copy(alpha = .05f)).padding(10.dp))
+                Text("将保存为 ${safeName(Uri.parse(clipLink.orEmpty()).lastPathSegment ?: "")}",
+                    fontSize = 12.sp, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    TextButton("取消", onClick = { vm.clipboardSuggest.value = null }, modifier = Modifier.weight(1f))
+                    // 弹窗语义是"是否下载"：确认即入库并立即开始下载，无需再去下载页手动开始。
+                    TextButton("下载", enabled = clipLink != null, onClick = {
+                        clipLink?.let { url -> vm.add(url) { task ->
+                            vm.clipboardSuggest.value = null; selectedPage = 1; downloadFilter = 0; vm.start(task.id)
+                        } }
+                    }, modifier = Modifier.weight(1f))
+                }
+            }
+        }
         SuperDialog(show = confirmDelete.isNotEmpty(), title = "删除文件？", onDismissRequest = { confirmDelete = "" }) {
             Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 Text(deleting?.name.orEmpty(), fontSize = 14.sp)
@@ -622,6 +693,9 @@ private fun LazyListScope.settingsItems(config: Config, vm: MainViewModel, onOpe
     item { SmallTitle("通用", insideMargin = sectionTitleMargin) }
     item {
         Card {
+            SuperSwitch(title = "剪贴板识别", summary = "打开应用时发现剪贴板中的下载链接将询问是否下载",
+                startAction = { SettingsIcon(Icons.AutoMirrored.Rounded.Rule) },
+                checked = config.clipboardDetect, onCheckedChange = { v -> vm.edit { it.copy(clipboardDetect = v) } })
             ArrowPreference(title = "外观", summary = "主题颜色与界面效果",
                 startAction = { SettingsIcon(Icons.Rounded.Palette) }, onClick = onOpenAppearance)
             ArrowPreference(title = "关于", summary = "LeiFetch ${BuildConfig.VERSION_NAME} · bileizhen",

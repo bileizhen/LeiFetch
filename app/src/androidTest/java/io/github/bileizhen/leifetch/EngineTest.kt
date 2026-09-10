@@ -41,7 +41,7 @@ class EngineTest {
     @Test fun multiThreadResultMatchesEveryByte() = runBlocking {
         server(payload).use { s ->
             val task = Task(url = s.url("/file.bin").toString(), name = "file.bin")
-            try { assertArrayEquals(payload, NsfxDownloadEngine(context, NsfxConfig(threads = 4, mode = "threads_only")).download(task) { _, _, _ -> }.readBytes()) }
+            try { assertArrayEquals(payload, NsfxDownloadEngine(context, NsfxConfig(threads = 4, mode = "threads_only")).download(task, { _, _, _ -> }).readBytes()) }
             finally { workDir(context, task.id).deleteRecursively() }
         }
     }
@@ -50,7 +50,7 @@ class EngineTest {
         server(payload, range = false, seen = seen).use { s ->
             val task = Task(url = s.url("/file.bin").toString(), name = "file.bin")
             try {
-                assertArrayEquals(payload, NsfxDownloadEngine(context, NsfxConfig(threads = 8, mode = "threads_only")).download(task) { _, _, _ -> }.readBytes())
+                assertArrayEquals(payload, NsfxDownloadEngine(context, NsfxConfig(threads = 8, mode = "threads_only")).download(task, { _, _, _ -> }).readBytes())
                 assertEquals(listOf("bytes=0-0", ""), seen.toList())
             } finally { workDir(context, task.id).deleteRecursively() }
         }
@@ -61,11 +61,11 @@ class EngineTest {
             val task = Task(url = s.url("/resume.bin").toString(), name = "resume.bin")
             try {
                 val engine = NsfxDownloadEngine(context, NsfxConfig(threads = 1, mode = "threads_only"))
-                val job = launch(Dispatchers.IO) { engine.download(task) { _, _, _ -> } }
+                val job = launch(Dispatchers.IO) { engine.download(task, { _, _, _ -> }) }
                 delay(400); job.cancelAndJoin()
                 val checkpoint = java.io.File(workDir(context, task.id), "0.offset").readText().toLong()
                 assertTrue(checkpoint > 0)
-                assertArrayEquals(payload, engine.download(task) { _, _, _ -> }.readBytes())
+                assertArrayEquals(payload, engine.download(task, { _, _, _ -> }).readBytes())
                 assertTrue(seen.contains("bytes=$checkpoint-${payload.lastIndex}"))
             } finally { workDir(context, task.id).deleteRecursively() }
         }
@@ -75,7 +75,7 @@ class EngineTest {
             val task = Task(url = s.url("/change.bin").toString(), name = "change.bin")
             try {
                 val engine = NsfxDownloadEngine(context, NsfxConfig(threads = 1, mode = "threads_only"))
-                engine.download(task) { _, _, _ -> }
+                engine.download(task, { _, _, _ -> })
                 val changed = ByteArray(payload.size) { 17 }
                 s.dispatcher = object : Dispatcher() {
                     override fun dispatch(r: RecordedRequest): MockResponse {
@@ -86,7 +86,7 @@ class EngineTest {
                             .setBody(Buffer().write(changed, a, b - a + 1))
                     }
                 }
-                assertArrayEquals(changed, engine.download(task) { _, _, _ -> }.readBytes())
+                assertArrayEquals(changed, engine.download(task, { _, _, _ -> }).readBytes())
             } finally { workDir(context, task.id).deleteRecursively() }
         }
     }
@@ -113,12 +113,12 @@ class EngineTest {
             val task = Task(url = s.url("/jump").toString(), name = "sgame.apk")
             try {
                 val engine = NsfxDownloadEngine(context, NsfxConfig(threads = 1, mode = "threads_only"))
-                val job = launch(Dispatchers.IO) { engine.download(task) { _, _, _ -> } }
+                val job = launch(Dispatchers.IO) { engine.download(task, { _, _, _ -> }) }
                 delay(400); job.cancelAndJoin()
                 val checkpoint = java.io.File(workDir(context, task.id), "0.offset").readText().toLong()
                 assertTrue("transfer must survive differing redirect targets", checkpoint > 0)
                 assertTrue(counter.get() >= 2)
-                assertArrayEquals(payload, engine.download(task) { _, _, _ -> }.readBytes())
+                assertArrayEquals(payload, engine.download(task, { _, _, _ -> }).readBytes())
                 assertTrue(counter.get() >= 3)
             } finally { workDir(context, task.id).deleteRecursively() }
         }
@@ -148,7 +148,7 @@ class EngineTest {
             val task = Task(url = s.url("/tail.bin").toString(), name = "tail.bin")
             try {
                 val engine = NsfxDownloadEngine(context, NsfxConfig(threads = 2, segments = 2, mode = "manual", maxRetries = 2))
-                val file = withTimeout(60_000) { engine.download(task) { _, _, _ -> } }
+                val file = withTimeout(60_000) { engine.download(task, { _, _, _ -> }) }
                 assertArrayEquals(data, file.readBytes())
                 val journal = org.json.JSONObject(java.io.File(workDir(context, task.id), "segments.json").readText())
                 assertTrue("Expected an actual tail split", journal.getJSONArray("segments").length() > 2)

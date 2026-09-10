@@ -47,7 +47,7 @@ class FirefoxDownloadTest {
             assertNotNull("Firefox admission failed for $kind", verified)
             val task = Task(url = verified!!.url, name = "compat-$kind.zip")
             try {
-                val file = NsfxDownloadEngine(c, NsfxConfig(maxRetries = 0)).download(task) { _, _, _ -> }
+                val file = NsfxDownloadEngine(c, NsfxConfig(maxRetries = 0)).download(task, { _, _, _ -> })
                 assertArrayEquals(payload, file.readBytes())
             } finally { workDir(c, task.id).deleteRecursively() }
         }
