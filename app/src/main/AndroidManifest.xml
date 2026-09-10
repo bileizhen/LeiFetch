@@ -1,0 +1,36 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <!-- miuix-blur 仅在 API 33+ 路径上使用（rememberBlurBackdrop/FloatingBottomBar 均有版本守卫） -->
+    <uses-sdk tools:overrideLibrary="top.yukonga.miuix.kmp.blur" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <application android:name=".LeiFetchApp" android:label="LeiFetch"
+        android:forceQueryable="true"
+        android:icon="@drawable/ic_download" android:allowBackup="false"
+        android:supportsRtl="true" android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        <activity android:name=".MainActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <service android:name=".DownloadService" android:exported="false"
+            android:foregroundServiceType="dataSync" />
+        <provider android:name=".CaptureProvider" android:exported="true"
+            android:authorities="io.github.bileizhen.leifetch.capture" />
+        <provider android:name=".HookPreferenceProvider" android:exported="true"
+            android:authorities="io.github.bileizhen.leifetch.preferences" />
+        <provider android:name="androidx.core.content.FileProvider" android:exported="false"
+            android:grantUriPermissions="true" android:authorities="io.github.bileizhen.leifetch.files">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" />
+        </provider>
+        <meta-data android:name="xposedmodule" android:value="true" />
+        <meta-data android:name="xposeddescription" android:value="LeiFetch 下载识别与接管" />
+        <meta-data android:name="xposedminversion" android:value="82" />
+    </application>
+</manifest>

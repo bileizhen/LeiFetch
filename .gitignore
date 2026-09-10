@@ -1,0 +1,10 @@
+.gradle/
+.kotlin/
+local.properties
+**/build/
+.research/
+.idea/
+docs/
+lsp/
+tools/
+build-local.ps1
