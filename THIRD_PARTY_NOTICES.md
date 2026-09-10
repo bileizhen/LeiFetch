@@ -22,3 +22,7 @@ LeiFetch 的界面壳照抄 XBlocker 的实现（同一作者，经其本人授�
 - LeiFetch 改动：包名/导入适配；四标签底栏；下载状态英雄卡与真实任务/速度数据；中文文案；无 i18n 资源层。使用本项目自己的名称与图标，不含 SukiSU 品牌资产。
 
 Miuix、AndroidX、Kotlin Coroutines、Gradle Wrapper 的原始版权及许可证仍适用；发布 APK 时应同时分发对应许可证与本项目完整源代码、构建文件和修改说明。MockWebServer / OkHttp 仅供测试使用，不是应用下载运行时。
+
+## LSPosed 作用域服务（2026-09-10）
+
+`XposedService.kt` 移植自 [XBlocker](https://github.com/bileizhen/XBlocker)（同一作者，授权移植）的 `data/XposedServiceProvider.kt`：经 `<包名>.XposedService` 提供者接收 LSPosed 推送的 libxposed 服务 binder，并以手写 binder Parcel 调用 `io.github.libxposed.service.IXposedService` 查询 / 申请模块作用域（避开中文路径下 AGP 的 AIDL 解析问题）。GPL-3.0，与本项目许可证一致。

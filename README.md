@@ -1,86 +1,90 @@
-# LeiFetch
+<div align="center">
+  <h1>LeiFetch</h1>
+  <p>把应用里的下载,接管成多线程下载。</p>
 
-Android 下载接管模块 · bileizhen
+  <p><strong>简体中文</strong></p>
 
-使用 LSPosed Hook 插件捕获应用下载，交给 Kotlin 重写的 NSFX 内核执行。界面采用 Miuix + Jetpack Compose，仅借鉴 Motrix 的任务组织方式，保留 Android 原生交互。
+  [![License](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
+  [![Android 6.0+](https://img.shields.io/badge/Android-6.0%2B-blue.svg)](https://developer.android.com/about/versions/marshmallow)
+  [![LSPosed](https://img.shields.io/badge/LSPosed-API_93_+_libxposed_101-orange.svg)](https://lsposed.org)
+  [![GitHub](https://img.shields.io/badge/作者-bileizhen-blue)](https://github.com/bileizhen)
 
-## 功能
+  <p>
+    <a href="https://github.com/bileizhen/LeiFetch/releases/latest">下载最新版</a>
+  </p>
+</div>
 
-- 自适应四栏：手机使用底部导航，宽屏使用侧栏；保留 Miuix 悬浮底栏和外观选项。
-- NSFX 内核主卡：线程上限、任务并行与动态拆分配置，待机呼吸、传输分流动效；速度曲线使用真实采样。
-- 仪表盘集中展示实时速度、任务计数、已完成文件大小和最近任务。
-- 下载按进行中、已停止、已完成、全部分类，支持搜索、按当前筛选批量开始和暂停；点击文件展开详情与操作。
-- 统一的新建下载入口，链接校验后创建待确认任务；插件的应用范围与说明按需展开。
-- NSFX：任务队列、直接分段写入、断点恢复、动态尾段拆分、指数退避、主机并发降级、全局连接和速度预算。
-- 插件：通用 DownloadManager / OkHttp / HttpURLConnection / WebView 捕获，以及 Firefox GeckoView 适配。
-- ColorOS / 一加 Android 16 实时卡片：待确认（确认下载 / 忽略）、下载进度，以及完成卡片上的打开、分享动作。
-  卡片按 OPPO 模板规范的信息层级调整：状态与百分比优先，文件名单独显示，辅助信息最多两项；仅传输中展示进度条。[设计说明与接入边界](docs/FLUID_CLOUD_DESIGN.md)。
-- 关于页（移植自 XBlocker / SukiSU）：动效背景、版本信息、GitHub 与 NSFX 上游链接、内置开源许可全文与隐私说明。
-- Miuix 浅色、深色、Monet；SAF 目录授权；DataStore 设置和只读 RemotePreferences 镜像。
+LeiFetch 是一个 Android 下载接管模块。它通过 LSPosed Hook 捕获应用内的下载请求,交给 Kotlin 移植的 NSFX 内核执行多线程下载;界面采用 Miuix + Jetpack Compose,任务组织方式参考 Motrix,交互保持 Android 原生。
 
-## 接管范围
+## 特性
 
-通用网络请求保留原应用的返回值和回调，进入 LeiFetch 待确认列表。它们不是透明的下载虚拟化：确认重新下载前，应取消原任务。
+- **NSFX 多线程内核**:单任务最多 16 线程、动态尾段拆分、断点恢复、指数退避、主机并发降级与全局连接 / 速度预算;每次跳转都更换签名 URL 的 CDN(如腾讯 cdntips)不会误报资源变化,断点可跨会话续传。
+- **GitHub 镜像加速**:自动识别 GitHub 直链下载(releases、archive、raw 等),经「镜像前缀 + 原链接」转发;自动模式在每次下载开始时实测各镜像首字节延迟择优,内置 5 个镜像站并支持自定义与手动指定。
+- **应用下载接管**:通用 DownloadManager / OkHttp / HttpURLConnection / WebView 捕获、Firefox GeckoView 适配,以及系统下载器插件(在 DownloadProvider 内集中捕获所有应用的 DownloadManager 入队,系统下载列表与通知入口改由 LeiFetch 呈现);发现的下载进入待确认列表,由你决定是否接管。
+- **任务详情三视图**:信息卡(传输 / 进度 / 连接 / 常规)、Motrix 式分段点阵(默认 1 MB 每片,绿色渐进填充,图例计数)和速度曲线(会话 60 秒 / 生命周期切换,均值、峰值、活跃时长)。
+- **实时卡片**:待确认(确认下载 / 忽略)、下载进度与完成(打开 / 分享)走 Android 16 原生实时通知接口,ColorOS 流体云等呈现形态由系统决定。
+- **传输工作台**:仪表盘实时速度曲线与任务统计;下载按进行中、已停止、已完成、全部分类,支持搜索与按筛选批量开始、暂停。
+- **动效细节**:NSFX 标题渐变随下载状态变速流动,引擎调度示意图在传输结束时收尾滑行;纯装饰,不冒充实测数据。
+- **Miuix 界面**:浅色、深色、Monet、模糊、液态玻璃、预测性返回与全局缩放;手机底部导航、宽屏侧栏自适应。
+- **本地优先**:设置与任务存于本机 DataStore / SQLite,远程偏好仅只读镜像;下载运行时不依赖任何第三方下载库。
 
-WebView 在请求可靠入库后替代原下载监听器；上报失败则回到原监听器。Firefox 插件观察 GeckoView 的外部响应（`onExternalResponse` 收到的 `WebResponse` 含完整响应头），独立探测公开 HTTP(S) 文件后进入待确认列表。普通 200 响应、未知大小、缺失或弱 ETag 均可接管；支持最多 5 次重定向，禁止 HTTPS 降级。仅在两端都提供版本或长度时比对，不再将分段能力作为接管条件。服务器拒绝 Range 时，探测与 NSFX 内核均回退普通 GET / 单连接下载。探测不会消费完整文件正文。
+## 兼容性
 
-Firefox 适配暂不提取浏览器 Cookie、Referer 或 POST 请求体；需要这些信息的资源、独立请求返回错误/登录页的资源，以及 blob/data URL 仍保留 Firefox 流程。日志会记录具体回退原因，不记录可能含凭据的完整下载 URL。浙大测速链接是早期实链路测试样例，生产代码没有域名白名单。
+| 项目 | 支持情况 |
+| --- | --- |
+| Android | 6.0(API 23)及以上 |
+| 框架 | LSPosed(legacy Xposed 93 与 libxposed API 101 双入口;作用域自动申请需支持 API 100+ 的框架) |
+| 已验证设备 | 一加 PLR110 · Android 16 / API 36 · Oplus ROM V16.1.0 |
 
-## 使用
+通用网络请求捕获保留原应用的返回值和回调;接管不是透明的下载虚拟化,确认重新下载前应先取消原任务。系统下载器插件在 `com.android.providers.downloads` 内识别 DownloadManager 入队(原任务保留),已由通用插件在应用内上报的入队不会重复捕获;`com.android.providers.downloads.ui` 的下载列表与通知入口(查看下载、通知点击)重定向到 LeiFetch 下载页,打开单个已完成文件的入口保持系统行为。系统下载器插件需在 LSPosed 勾选上述两个系统包并重启后生效。Firefox 插件观察 GeckoView 外部响应后独立探测公开 HTTP(S) 文件;普通 200 响应、未知大小、缺失或弱 ETag 均可接管,最多跟随 5 次重定向并禁止 HTTPS 降级。服务器拒绝 Range 时自动回退单连接。Firefox 适配暂不提取 Cookie、Referer 或 POST 请求体,需要这些信息的资源与 blob/data URL 保留浏览器自身流程。
 
-1. 安装 APK；在 LSPosed 中启用 LeiFetch，并勾选要适配的应用。
-2. 打开插件页，开启下载接管和对应插件；通用插件需填写应用包名。
-3. 重启目标应用。发现的下载会进入下载页，点击确认下载。
-4. 为 LeiFetch 允许通知和系统的实时通知权限；ColorOS 的流体云呈现由系统决定。
-5. 在设置中选择保存目录。默认应用内部文件会随卸载删除。
+## 安装
 
-## 构建
+1. 从 [Releases](https://github.com/bileizhen/LeiFetch/releases) 下载并安装 APK。
+2. 在 LSPosed 中启用 **LeiFetch**。开启插件或下载接管总开关时会自动向 LSPosed 申请所需作用域(在弹窗中确认即可):Firefox 插件申请浏览器包名,系统下载器插件申请 `com.android.providers.downloads` 与 `com.android.providers.downloads.ui`,授权后重启生效;通用插件还需在插件页填写目标应用包名。若申请弹窗未出现或被拒绝,可在插件卡片展开区重新申请,或到 LSPosed 手动勾选。
+3. 为 LeiFetch 允许通知权限;实时卡片(流体云等)的呈现由系统决定。
+4. 重启目标应用。发现的下载会进入下载页,点击确认后开始传输。
+5. 可选:在设置中选择 SAF 保存目录。默认保存在应用内部,卸载时会一并删除。
 
-需要 JDK 17 或 21、Android SDK 37、Build Tools 35，以及网络访问。
+ColorOS 需允许 LeiFetch 后台运行:Firefox 进程内读取接管配置依赖 LeiFetch 的偏好提供者,进程被深度冻结或强停时配置读取失败,接管自动退回 Firefox 自身下载。
+
+## 隐私
+
+- 下载探测不消费完整文件正文;日志记录回退原因,但不记录可能含凭据的完整下载 URL。
+- 关于页的开发组与贡献者名单会从腾讯 QQ 头像 CDN 加载对应头像;不发生其它请求。
+- 启用 GitHub 镜像加速时,对应任务的 GitHub 地址会经所选镜像站转发;镜像测速只请求 Range 首字节,不消费文件正文。
+- 规则与配置在本机匹配和存储,不上传任务列表、URL 或站点信息。
+- 网络仅用于你主动发起的下载与探测,没有遥测和统计上报。
+
+## 从源码构建
+
+需要 JDK 17 或 21、Android SDK 37、Build Tools 35。创建本地 `local.properties` 后执行:
 
 ```powershell
-.\build-local.ps1 :app:assembleDebug
-.\build-local.ps1 :app:testDebugUnitTest :app:lintDebug
+.\gradlew.bat :app:assembleDebug
+.\gradlew.bat :app:testDebugUnitTest :app:lintDebug
 ```
 
-Windows 脚本为当前工程建立 ASCII 路径联接并使用短临时目录，避免中文路径与 Java Unix-domain socket 问题。其他环境可用 `./gradlew :app:assembleDebug`，并在 `local.properties` 配置本机 SDK。
-
-APK：`app/build/outputs/apk/debug/app-debug.apk`。
-
-下载运行时不依赖第三方下载库，也不依赖 OkHttp。MockWebServer / OkHttp 仅用于测试夹具。
-
-## 真机测试
+真机测试:
 
 ```powershell
-.\build-local.ps1 :app:assembleDebugAndroidTest
-adb install -r app/build/outputs/apk/debug/app-debug.apk
-adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+.\gradlew.bat :app:connectedDebugAndroidTest
 adb shell pm grant io.github.bileizhen.leifetch android.permission.POST_NOTIFICATIONS
 adb shell am instrument -w io.github.bileizhen.leifetch.test/androidx.test.runner.AndroidJUnitRunner
 ```
 
-测试使用手机本机 HTTP 服务；`FirefoxProbeZjuTest` 仅对 speedtest.zju.edu.cn 发起 1 字节 Range 探测，设备无法解析该域名时自动跳过。CloudProbeTest 展示 30 秒完成卡片，供检查流体云动作。测试授权仅限 LeiFetch 的通知权限。
+Windows 中文路径下如遇 Java Unix-domain socket 报错,可把工程联接到 ASCII 路径后构建。正式发布请使用自己的签名密钥。
 
-详细验证结果见 [验证记录](docs/VALIDATION.md)，完整方案和 Kotlin 代码见 [开发方案](docs/DEVELOPMENT_PLAN.md)。
+## 许可
 
-## 功能截图占位
+NSFX 内核移植自 [Hanabi-Download-Manager-X](https://github.com/buaoyezz/Hanabi-Download-Manager-X)(基准提交 `5df83d3`),界面部分参考 SukiSU-Ultra 与 XBlocker 的关于页,完整应用按 GPL-3.0 分发,详见 [LICENSE](LICENSE)。上游及组件归属见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
-| 仪表盘 | 下载 | 插件 | 设置 | 流体云展开卡片 |
-|---|---|---|---|---|
-| 待补充仪表盘截图 | 待补充下载进度截图 | 待补充插件开关截图 | 待补充设置截图 | 待补充含打开 / 分享按钮的真机截图 |
+LeiFetch 与 NSFX 上游、LSPosed 及各被适配应用没有隶属关系。
 
-## 兼容性与实现边界
+## 浏览量
 
-- 声明 minSdk 23，实际测试设备为一加 PLR110、Android 16 / API 36、Oplus ROM V16.1.0。
-- 流体云属于 OPPO / ColorOS；不使用小米 `miui.focus.*` 超级岛协议。
-- 低于 Android 16 或系统不接受实时卡片时，只能使用系统可用的通知显示方式；不能把普通通知当作已验证的流体云。
-- ColorOS 需允许 LeiFetch 后台运行：Firefox 进程内读取接管配置依赖 LeiFetch 的偏好提供者，进程被深度冻结或强停时配置读取失败，接管自动退回 Firefox 自身下载。
-- 原 NSFX 桌面版的 HTTP RPC、浏览器扩展服务器、Rust/rhttp 与 HTTP/3、桌面手动代理界面不在 Android 移植范围。没有校验器的资源采用单连接重下。
-- 前台服务不是永久保活；强制停止、系统超时或厂商回收后，下次打开应用可继续有强校验器的下载。
-- SAF 文档提供者的创建、写入、重命名不具备统一的文件系统事务保证；异常时记录发布状态并清理未完成文档。
+<div align="center">
 
-## 许可证
+![:shell](https://count.getloli.com/@bileizhen_LeiFetch?name=bileizhen_LeiFetch&theme=original-new&padding=7&offset=0&align=center&scale=1&pixelated=1&darkmode=auto)
 
-NSFX 基准提交：`5df83d35431c60be83a3a6527c4c3caa2b070b7b`。
-
-GPLv3。上游及组件归属见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)；完整许可证见 [LICENSE](LICENSE)。
+</div>
