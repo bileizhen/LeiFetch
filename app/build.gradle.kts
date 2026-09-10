@@ -65,6 +65,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("com.crossbowffs.remotepreferences:remotepreferences:0.8")
     compileOnly("de.robv.android.xposed:api:82")
+    // libxposed API 101 入口：让 LSPosed 投递服务 binder（作用域申请）。
+    compileOnly("io.github.libxposed:api:101.0.1")
     testImplementation("junit:junit:4.13.2")
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")

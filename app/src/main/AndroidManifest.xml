@@ -25,12 +25,17 @@
             android:authorities="io.github.bileizhen.leifetch.capture" />
         <provider android:name=".HookPreferenceProvider" android:exported="true"
             android:authorities="io.github.bileizhen.leifetch.preferences" />
+        <!-- LSPosed 推送 libxposed 服务 binder，用于查询 / 申请模块作用域。 -->
+        <provider android:name=".XposedServiceProvider" android:exported="true"
+            android:authorities="io.github.bileizhen.leifetch.XposedService"
+            tools:ignore="ExportedContentProvider" />
         <provider android:name="androidx.core.content.FileProvider" android:exported="false"
             android:grantUriPermissions="true" android:authorities="io.github.bileizhen.leifetch.files">
             <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" />
         </provider>
         <meta-data android:name="xposedmodule" android:value="true" />
         <meta-data android:name="xposeddescription" android:value="LeiFetch 下载识别与接管" />
-        <meta-data android:name="xposedminversion" android:value="82" />
+        <!-- 与 XBlocker 相同的声明组合：93 兼容 legacy 框架，java_init.list 声明 libxposed API 101 入口。 -->
+        <meta-data android:name="xposedminversion" android:value="93" />
     </application>
 </manifest>
