@@ -547,6 +547,19 @@ private fun AboutContent(
     }
 }
 
+/** 发行物里实际包含的开源组件；仅测试期依赖与仅编译期引用的 API 也列出来，免得被误认为随包分发。 */
+private val thirdPartyComponents = listOf(
+    "NSFX 下载内核" to "GPL-3.0 · Hanabi-Download-Manager-X 的 Kotlin 移植",
+    "界面壳与液态玻璃" to "GPL-3.0 · 移植自 SukiSU-Ultra 与 XBlocker",
+    "Miuix" to "Apache-2.0 · Compose 组件、模糊与动画",
+    "AndroidX" to "Apache-2.0 · Compose、Navigation3、DataStore、Activity",
+    "Kotlin / kotlinx.coroutines" to "Apache-2.0 · 语言与协程运行时",
+    "Material Icons" to "Apache-2.0 · 部分矢量源文件",
+    "RemotePreferences" to "Apache-2.0 · 跨进程只读偏好",
+    "libxposed / Xposed API" to "Apache-2.0 · 仅编译期引用",
+    "OkHttp / MockWebServer" to "Apache-2.0 · 仅测试使用",
+)
+
 private fun licenses() = listOf(
     "第三方来源与修改" to "THIRD_PARTY_NOTICES.md",
     "GNU GPL v3" to "licenses/GPL-3.0.txt",
@@ -794,14 +807,20 @@ internal fun AboutDocumentScreen(privacy: Boolean, onBack: () -> Unit) {
             verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp),
         ) {
             if (privacy) {
-                item { Card { BasicComponent(title = "本地处理", summary = "下载任务、进度与历史仅存于设备本地数据库；不上传任何数据，卸载即清除。") } }
-                item { Card { BasicComponent(title = "网络访问", summary = "仅连接你要下载的目标服务器，以及接管前的 1 字节校验探测；无遥测、无第三方中转。") } }
-                item { Card { BasicComponent(title = "凭据处理", summary = "捕获到的 Cookie / Authorization 等请求头只用于确认后的下载，不写入其它位置。") } }
+                item { Card { BasicComponent(title = "本地处理", summary = "下载任务、进度与历史只存在本机的数据库与偏好里；没有账号体系，不上传任何数据，卸载即清除。") } }
+                item { Card { BasicComponent(title = "网络访问", summary = "只连接你要下载的目标服务器，以及接管前的 1 字节 Range 校验探测；没有遥测与统计上报。") } }
+                item { Card { BasicComponent(title = "GitHub 镜像", summary = "开启镜像加速后，该任务的 GitHub 地址会经所选镜像站转发；测速只请求 Range 首字节，不消费文件正文。可在设置中关闭。") } }
+                item { Card { BasicComponent(title = "剪贴板", summary = "开启剪贴板识别后，仅在你打开应用时读取一次剪贴板文本用于识别下载链接；命中的链接只在本地记录用于去重，不保存剪贴板原文、不上传。") } }
+                item { Card { BasicComponent(title = "凭据与日志", summary = "捕获到的 Cookie / Authorization 等请求头只用于对应任务的下载并随任务本地保存，取消接管后清除；日志只记回退原因，不记录可能含凭据的完整下载 URL。") } }
+                item { Card { BasicComponent(title = "关于页头像", summary = "开发组与贡献者名单的头像按 QQ 号从腾讯头像 CDN 加载，仅用于展示；除此之外不发起其它请求。") } }
                 item { Card { BasicComponent(title = "通知与流体云", summary = "用于待确认、下载进度与完成提醒；完成卡片提供打开、分享动作。") } }
                 item { Card { BasicComponent(title = "LSPosed 作用域", summary = "仅在手动勾选的应用内捕获下载；Firefox 接管前独立探测 ETag 一致，失败时保留浏览器自身下载。") } }
                 item { Card { BasicComponent(title = "存储", summary = "文件只写入你选择的目录；应用内目录的文件随卸载删除。") } }
             } else {
-                item { Card { BasicComponent(title = "LeiFetch", summary = "NSFX 内核 Kotlin 移植与 SukiSU 关于页面的组合应用；GPL-3.0。") } }
+                item { Card { BasicComponent(title = "LeiFetch", summary = "NSFX 内核 Kotlin 移植、Miuix 界面与 LSPosed 捕获的组合；本项目以 GPL-3.0 发布，完整源码与构建文件随发行版提供。") } }
+                item { SmallTitle("主要开源组件", insideMargin = PaddingValues(horizontal = 20.dp, vertical = 8.dp)) }
+                item { Card { thirdPartyComponents.forEach { (name, note) -> BasicComponent(title = name, summary = note) } } }
+                item { SmallTitle("许可证全文", insideMargin = PaddingValues(horizontal = 20.dp, vertical = 8.dp)) }
                 item { Card { licenses.forEach { (title, asset) -> ArrowPreference(title = title, onClick = { selected = asset }) } } }
             }
         }
