@@ -815,16 +815,17 @@ private fun LazyListScope.settingsItems(config: Config, vm: MainViewModel, onOpe
                 items = listOf(4, 8, 16, 32, 64).map { DropdownItem("$it 个连接") },
                 selectedIndex = listOf(4, 8, 16, 32, 64).indexOf(config.connections).coerceAtLeast(0),
                 onSelectedIndexChange = { index -> vm.edit { it.copy(connections = listOf(4, 8, 16, 32, 64)[index]) } })
-            SwitchPreference(title = "NSFX 动态拆分", summary = "空闲线程接手缓慢尾段",
-                startAction = { SettingsIcon(Icons.Rounded.RocketLaunch) },
-                checked = config.dynamic, onCheckedChange = { v -> vm.edit { it.copy(dynamic = v) } })
             OverlaySpinnerPreference(title = "全局速度上限", startAction = { SettingsIcon(Icons.Filled.Update) },
                 items = listOf("不限速", "1 MB/s", "5 MB/s", "10 MB/s").map { DropdownItem(it) },
                 selectedIndex = listOf(0L, 1048576L, 5242880L, 10485760L).indexOf(config.speedLimit).coerceAtLeast(0),
                 onSelectedIndexChange = { index -> vm.edit { it.copy(speedLimit = listOf(0L, 1048576L, 5242880L, 10485760L)[index]) } })
+            // 数值参数在前、行为开关收尾：同类项相邻，扫一眼就知道这组在调什么。
+            SwitchPreference(title = "NSFX 动态拆分", summary = "空闲线程接手缓慢尾段",
+                startAction = { SettingsIcon(Icons.Rounded.RocketLaunch) },
+                checked = config.dynamic, onCheckedChange = { v -> vm.edit { it.copy(dynamic = v) } })
         }
     }
-    item { SmallTitle("保存", insideMargin = sectionTitleMargin) }
+    item { SmallTitle("保存位置", insideMargin = sectionTitleMargin) }
     item {
         Card {
             ArrowPreference(title = "保存目录", summary = displayTree(config.tree).ifEmpty { "应用内 downloads 目录" },
@@ -855,6 +856,13 @@ private fun LazyListScope.settingsItems(config: Config, vm: MainViewModel, onOpe
             SuperSwitch(title = "ColorOS 流体云", summary = "Android 16 实时进度通知，由系统决定呈现",
                 startAction = { SettingsIcon(Icons.Rounded.WaterDrop) },
                 checked = config.fluid, onCheckedChange = { v -> vm.edit { it.copy(fluid = v) } })
+        }
+    }
+    // 这两项都是"跳去系统设置"，和上面两个应用内开关性质不同，单独成组。
+    item { SmallTitle("系统权限", insideMargin = sectionTitleMargin) }
+    item {
+        val context = LocalContext.current
+        Card {
             ArrowPreference(title = "实时通知权限", summary = Notices.diagnostic(context),
                 startAction = { SettingsIcon(Icons.Rounded.Troubleshoot) }, onClick = { Notices.openSettings(context) })
             ArrowPreference(title = "电池与后台运行", summary = "按需允许后台活动和自启动",
