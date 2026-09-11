@@ -13,5 +13,6 @@ build-local.ps1
 leifetch-release.jks
 keystore.properties
 
-# 打包产物经 GitHub Releases 分发，不入库
+# 打包产物与宣传物料经 GitHub Releases 分发，不入库
 *.apk
+LeiFetch-promo.mp4
