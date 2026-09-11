@@ -18,19 +18,21 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class ClipboardDetectE2eTest {
-    private val url = "https://dragonwell.oss-cn-shanghai.aliyuncs.com/11.0.31.28.11/Alibaba_Dragonwell_Extended_11.0.31.28.11_x64_linux.tar.gz"
+    // 每次运行唯一：剪贴板可能还留着上一次运行写入的链接，固定值会误触发首次去重。
+    private val url = "https://dragonwell.oss-cn-shanghai.aliyuncs.com/11.0.31.28.11/Alibaba_Dragonwell_Extended_11.0.31.28.11_x64_linux.tar.gz?e2e=${System.currentTimeMillis()}"
 
     @Test fun copiedLinkPromptsDownloadDialog() {
         val instr = InstrumentationRegistry.getInstrumentation()
         val cm = instr.targetContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         var first: ActivityScenario<MainActivity>? = null
         var second: ActivityScenario<MainActivity>? = null
+        var third: ActivityScenario<MainActivity>? = null
         try {
             // 实例 A 获得窗口焦点后，本进程才有剪贴板写入权限。
             first = ActivityScenario.launch(MainActivity::class.java)
             Thread.sleep(1500)
             instr.runOnMainSync { cm.setPrimaryClip(ClipData.newPlainText("url", url)) }
-            // 回到桌面触发 onStop（重置提示去重），随后重新打开触发 onWindowFocusChanged。
+            // 回到桌面再重新打开，走真实的用户路径触发 onWindowFocusChanged。
             instr.sendKeyDownUpSync(KeyEvent.KEYCODE_HOME)
             Thread.sleep(800)
             second = ActivityScenario.launch(MainActivity::class.java)
@@ -41,8 +43,17 @@ class ClipboardDetectE2eTest {
                 second.onActivity { a -> seen = a.vm.clipboardSuggest.value }
             }
             assertEquals(url, seen)
+            // 同一链接只询问一次：取消弹窗后回到桌面再打开，不应再次触发。
+            second.onActivity { it.vm.clipboardSuggest.value = null }
+            instr.sendKeyDownUpSync(KeyEvent.KEYCODE_HOME)
+            Thread.sleep(800)
+            third = ActivityScenario.launch(MainActivity::class.java)
+            Thread.sleep(3000)
+            var again: String? = "unset"
+            third.onActivity { a -> again = a.vm.clipboardSuggest.value }
+            assertEquals(null, again)
         } finally {
-            first?.close(); second?.close()
+            first?.close(); second?.close(); third?.close()
         }
     }
 }

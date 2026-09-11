@@ -150,7 +150,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
     /** 剪贴板下载链接识别：等待数据就绪后读取剪贴板，发现链接时供弹窗询问是否下载。 */
     val clipboardSuggest = MutableStateFlow<String?>(null)
-    private var clipboardSuggested = ""
     fun checkClipboard() = viewModelScope.launch {
         if (clipboardSuggest.value != null) return@launch
         app.ready.await()
@@ -167,14 +166,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (attempt < 4) delay(200)
         }
         val url = clipboardUrl(text ?: "") ?: return@launch
-        // 同一链接一次前台会话只提示一次；已在任务列表中的活跃链接也不再询问。
-        if (url == clipboardSuggested) return@launch
-        clipboardSuggested = url
+        // 已询问过的链接持久去重：划掉后台、进程被杀、强停都不重置，避免剪贴板里的
+        // 旧链接每次打开都弹；只保留最近 64 条。已在任务列表中的活跃链接也不再询问。
+        val seen = config.value.clipboardSeen.lines().filter { it.isNotEmpty() }
+        if (url in seen) return@launch
+        runCatching {
+            app.settings.edit { it.copy(clipboardSeen = ((seen + url).takeLast(64)).joinToString("\n")) }
+        }
         if (app.store.tasks.value.any { it.url == url && it.state !in setOf("已完成", "已取消") }) return@launch
         clipboardSuggest.value = url
     }
-    /** 退到后台后重置提示去重：再次打开应用时，剪贴板里仍是未入库的链接就继续询问。 */
-    fun rearmClipboard() { clipboardSuggested = "" }
     fun add(url: String, onAdded: (Task) -> Unit = {}) = work {
         val u = Uri.parse(url.trim())
         require(u.scheme in setOf("http", "https") && !u.host.isNullOrEmpty()) { "请输入有效 HTTP(S) 下载地址" }
@@ -234,10 +235,6 @@ class MainActivity : ComponentActivity() {
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) vm.checkClipboard()
-    }
-    override fun onStop() {
-        super.onStop()
-        vm.rearmClipboard()
     }
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent); setIntent(intent); handle(intent)

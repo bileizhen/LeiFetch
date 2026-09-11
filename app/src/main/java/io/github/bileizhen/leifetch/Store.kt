@@ -28,7 +28,7 @@ data class Config(
     val blur: Boolean = true, val floatingBar: Boolean = true, val liquidGlass: Boolean = true,
     val predictiveBack: Boolean = true, val scale: Float = 1f, val plugins: String = "generic",
     val githubMirror: Boolean = true, val githubMirrorPick: String = "auto", val githubMirrors: String = "",
-    val clipboardDetect: Boolean = true
+    val clipboardDetect: Boolean = true, val clipboardSeen: String = ""
 )
 
 class Settings(private val context: Context, scope: CoroutineScope) {
@@ -54,12 +54,13 @@ class Settings(private val context: Context, scope: CoroutineScope) {
     private val githubMirrorPick = stringPreferencesKey("githubMirrorPick")
     private val githubMirrors = stringPreferencesKey("githubMirrors")
     private val clipboardDetect = booleanPreferencesKey("clipboardDetect")
+    private val clipboardSeen = stringPreferencesKey("clipboardSeen")
     private fun Preferences.read() = Config(
         p_threads(), p_tree(), p_notices(), p_fluid(), p_enabled(), p_packages(),
         p_colorMode(), p_maxTasks(), p_connections(), p_speedLimit(), p_dynamic(),
         p_blur(), p_floatingBar(), p_liquidGlass(), p_predictiveBack(), p_scale(), this[plugins] ?: "generic",
         this[githubMirror] ?: true, this[githubMirrorPick] ?: "auto", this[githubMirrors] ?: "",
-        this[clipboardDetect] ?: true
+        this[clipboardDetect] ?: true, this[clipboardSeen] ?: ""
     )
     private fun Preferences.p_threads() = this[threads] ?: 4
     private fun Preferences.p_tree() = this[tree] ?: ""
@@ -115,6 +116,7 @@ class Settings(private val context: Context, scope: CoroutineScope) {
             p[githubMirrorPick] = next.githubMirrorPick.trim()
             p[githubMirrors] = next.githubMirrors.trim()
             p[clipboardDetect] = next.clipboardDetect
+            p[clipboardSeen] = next.clipboardSeen.trim('\n')
         }
     }
 }
