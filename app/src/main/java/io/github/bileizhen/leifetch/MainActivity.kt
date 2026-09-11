@@ -12,11 +12,22 @@ import android.provider.Settings as AndroidSettings
 import android.webkit.MimeTypeMap
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -35,6 +46,7 @@ import androidx.compose.material.icons.automirrored.rounded.Rule
 import androidx.compose.material.icons.filled.Update
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -46,6 +58,7 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.text.font.FontWeight
@@ -53,6 +66,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
@@ -70,8 +84,11 @@ import io.github.bileizhen.leifetch.ui.AboutDocumentScreen
 import io.github.bileizhen.leifetch.ui.AboutScreenActions
 import io.github.bileizhen.leifetch.ui.AboutScreenMiuix
 import io.github.bileizhen.leifetch.ui.AboutUiState
+import io.github.bileizhen.leifetch.ui.NewDownloadSheetState
+import io.github.bileizhen.leifetch.ui.NewDownloadTopSheet
 import io.github.bileizhen.leifetch.ui.PlainFloatingBar
 import io.github.bileizhen.leifetch.ui.SuperSwitch
+import io.github.bileizhen.leifetch.ui.topPullToNewDownload
 import io.github.bileizhen.leifetch.ui.component.FloatingBottomBar
 import io.github.bileizhen.leifetch.ui.component.FloatingBottomBarItem
 import io.github.bileizhen.leifetch.ui.theme.LocalDarkTheme
@@ -279,6 +296,16 @@ fun fileAction(context: Context, task: Task, share: Boolean) {
     }.onFailure { Toast.makeText(context, "无法打开文件：${it.javaClass.simpleName}", Toast.LENGTH_LONG).show() }
 }
 
+/** 任务 id 是 UUID，逗号拼接即可与 Bundle 互存，省去为一组字符串再写一层容器。 */
+private val idSetSaver = Saver<Set<String>, String>(
+    save = { it.joinToString(",") },
+    restore = { if (it.isEmpty()) emptySet() else it.split(",").toSet() },
+)
+private val idListSaver = Saver<List<String>, String>(
+    save = { it.joinToString(",") },
+    restore = { if (it.isEmpty()) emptyList() else it.split(",") },
+)
+
 /** 与 XBlocker 相同的 ColorMode：0/3 跟随系统，1/4 浅色，2/5 深色。 */
 private fun isDarkMode(colorMode: Int, systemDark: Boolean): Boolean = when (colorMode) {
     1, 4 -> false
@@ -345,8 +372,39 @@ private fun LeiFetchScreen(vm: MainViewModel, startPage: Int = 0) {
     fun navigateBack() {
         if (backStack.size > 1) backStack = backStack.dropLast(1)
     }
-    var confirmDelete by rememberSaveable { mutableStateOf("") }
+    // 多选与删除：selection 是勾选集合；pendingDelete 是「等待确认」的任务 id（弹窗数据），
+    // hiddenRows 是被滑出屏幕的行 —— 只有滑动删除会把行推出视野（承接手势的收尾），
+    // 批量删除不整屏推出，否则确认框弹出来时列表会突然全空。取消时滑出的行反向弹回。
+    var selecting by rememberSaveable { mutableStateOf(false) }
+    var selection by rememberSaveable(stateSaver = idSetSaver) { mutableStateOf(emptySet<String>()) }
+    var pendingDelete by rememberSaveable(stateSaver = idListSaver) { mutableStateOf(emptyList<String>()) }
+    var hiddenRows by rememberSaveable(stateSaver = idSetSaver) { mutableStateOf(emptySet<String>()) }
+    var revealedRow by remember { mutableStateOf("") }
+    fun exitSelection() { selecting = false; selection = emptySet() }
+    fun confirmDeleteTasks(ids: List<String>, slideOut: Boolean) {
+        revealedRow = ""
+        if (slideOut) hiddenRows = hiddenRows + ids
+        pendingDelete = ids
+    }
+    fun cancelDeleteTasks() { hiddenRows = hiddenRows - pendingDelete.toSet(); pendingDelete = emptyList() }
     var showNewDownload by rememberSaveable { mutableStateOf(false) }
+    // 顶弹“新建下载”：顶栏下拉跟手、松手弹性展开，展开后可上滑关闭。
+    val sheetState = remember { NewDownloadSheetState() }
+    val uiScope = rememberCoroutineScope()
+    // 确认删除：任务落库后行会随列表消失，滑出的行在此期间保持滑出；删除失败时再放回来。
+    fun runDelete() {
+        val ids = pendingDelete
+        if (ids.isEmpty()) return
+        pendingDelete = emptyList()
+        tasks.filter { it.id in ids }.forEach(vm::delete)
+        uiScope.launch { delay(900); hiddenRows = hiddenRows - ids.toSet() }
+    }
+    // 任务真的从列表消失后立刻释放行的滑出状态；删除失败则由上面的兜底把行放回来。
+    LaunchedEffect(tasks, hiddenRows) {
+        val gone = hiddenRows.filterNot { id -> tasks.any { it.id == id } }
+        if (gone.isNotEmpty()) hiddenRows = hiddenRows - gone.toSet()
+    }
+    val haptic = LocalHapticFeedback.current
     var expandedTask by rememberSaveable { mutableStateOf("") }
     val search = rememberTextFieldState()
     var showSearch by rememberSaveable { mutableStateOf(false) }
@@ -380,54 +438,142 @@ private fun LeiFetchScreen(vm: MainViewModel, startPage: Int = 0) {
         Scaffold(
             modifier = pageModifier,
             topBar = {
+                // 从标题下拉唤出“新建下载”顶弹层（替代原右上角 + 按钮）；多选时让位给选择操作。
+                val pullEnabled = page < 4 && !(page == 1 && selecting)
+                // 顶栏与搜索框共用一层玻璃：搜索框从标题下方展开，钉在顶栏里，
+                // 列表滚到哪儿都能直接输入，不必先滚回顶部。
                 BlurredBar(backdrop) {
-                    SmallTopAppBar(
-                        title = if (page == 0) "LeiFetch" else pages[page],
-                        color = if (backdrop != null) Color.Transparent else surfaceColor,
-                        scrollBehavior = scrollBehavior,
-                            navigationIcon = {
-                            if (page >= 4) IconButton(onClick = { navigateBack() }) {
-                                Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回", tint = MiuixTheme.colorScheme.onSurface)
-                            }
-                        },
-                        actions = {
-                            if (page == 1) IconButton(onClick = { showSearch = !showSearch; if (!showSearch) search.edit { replace(0, length, "") } }) {
-                                Icon(if (showSearch) Icons.Rounded.Close else Icons.Rounded.Search, if (showSearch) "关闭搜索" else "搜索下载")
-                            }
-                            if (page < 2) IconButton(onClick = { showNewDownload = true },
-                                modifier = Modifier.padding(end = 8.dp).size(48.dp).clip(RoundedCornerShape(16.dp))
-                                    .background(MiuixTheme.colorScheme.primary)) {
-                                Icon(Icons.Rounded.Add, "新建下载", tint = MiuixTheme.colorScheme.onPrimary)
-                            }
-                        },
-                    )
+                    Column {
+                        // zIndex：让顶栏（含那个会飞的搜索图标）盖在下面展开的搜索框之上，
+                        // 否则图标升回来时会被搜索框压住、看着像"凭空出现"。
+                        Box((if (pullEnabled) Modifier.topPullToNewDownload(sheetState, uiScope, haptic) { showNewDownload = true } else Modifier)
+                            .zIndex(1f)) {
+                            SmallTopAppBar(
+                                title = when {
+                                    page == 1 && selecting -> if (selection.isEmpty()) "选择任务" else "已选择 ${selection.size} 项"
+                                    page == 0 -> "LeiFetch"
+                                    else -> pages[page]
+                                },
+                                color = if (backdrop != null) Color.Transparent else surfaceColor,
+                                scrollBehavior = scrollBehavior,
+                                navigationIcon = {
+                                    if (page >= 4) IconButton(onClick = { navigateBack() }) {
+                                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回", tint = MiuixTheme.colorScheme.onSurface)
+                                    }
+                                },
+                                actions = {
+                                    if (page == 1 && !selecting) {
+                                        // 两个图标叠在同一个槽位里交接：并排的话交叉淡入淡出时
+                                        // 两个都占位，图标会左右跳一下（看着像闪）。
+                                        val drop = with(LocalDensity.current) { 55.dp.roundToPx() }
+                                        Box(contentAlignment = Alignment.Center) {
+                                            // ✕ 渐显，接手关闭。
+                                            androidx.compose.animation.AnimatedVisibility(showSearch,
+                                                // 等放大镜落走之后才渐显，同一位置两个图标重叠会看成重影。
+                                                enter = fadeIn(tween(200, delayMillis = 180)),
+                                                exit = fadeOut(tween(60)), label = "closeAction") {
+                                                IconButton(onClick = {
+                                                    showSearch = false; search.edit { replace(0, length, "") }
+                                                }) {
+                                                    // 30dp：Material 的 ✕ 在 24dp 下只画到约 13dp，
+                                                    // 比放大镜(约 17dp)瘦一圈；放大到等重才不显小。
+                                                    Icon(Icons.Rounded.Close, "关闭搜索", modifier = Modifier.size(30.dp))
+                                                }
+                                            }
+                                            // 放大镜按与搜索行一致的距离向下落。
+                                            androidx.compose.animation.AnimatedVisibility(!showSearch,
+                                                // 关闭时从下方（搜索行那个位置）升回原位，与打开时的下落同一段行程。
+                                                // 与收框同步：200ms 升回顶栏，✕ 先让位、行内图标同步淡出，
+                                                // 三个动作一起走完，中途不会出现两个放大镜。
+                                                // 早点显形，让"往上移"这段真看得见；行内图标同一位置同步淡出，
+                                                // 所以早期淡入也不会看出两个图标。
+                                                enter = fadeIn(tween(90, delayMillis = 50)) +
+                                                    slideInVertically(tween(200, easing = FastOutSlowInEasing)) { drop },
+                                                exit = fadeOut(tween(150)) +
+                                                    slideOutVertically(tween(230, easing = FastOutSlowInEasing)) { drop },
+                                                label = "searchAction") {
+                                                IconButton(onClick = { showSearch = true }) {
+                                                    Icon(Icons.Rounded.Search, "搜索下载")
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                            )
+                        }
+                        if (page == 1) AnimatedVisibility(showSearch,
+                            enter = expandVertically(expandFrom = Alignment.Top,
+                                animationSpec = spring(dampingRatio = 0.88f, stiffness = 700f)) + fadeIn(tween(150)),
+                            // 收框与图标上升同时进行（同为 200ms）：不同步会显得拖沓。
+                            // 行内图标由 open 驱动先行淡出，所以"同步"不会留下两个图标。
+                            exit = shrinkVertically(shrinkTowards = Alignment.Top,
+                                animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing)),
+                            label = "searchBar") {
+                            TaskSearchBar(search, open = showSearch)
+                        }
+                    }
                 }
             },
             bottomBar = {
                 if (page < 4 && !wideLayout) {
                     if (config.floatingBar) {
                         Box(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 26.dp, vertical = 12.dp), contentAlignment = Alignment.Center) {
-                            if (Build.VERSION.SDK_INT < 33) {
-                                PlainFloatingBar(page, pages, icons) { selectedPage = it }
-                            } else {
-                                FloatingBottomBar(
-                                    modifier = Modifier.widthIn(max = 480.dp).fillMaxWidth(),
-                                    selectedIndex = { page }, onSelected = { selectedPage = it },
-                                    backdrop = glassBackdrop, tabsCount = 4, isBlurEnabled = glassEnabled, isGlassEnabled = config.liquidGlass,
-                                ) {
-                                    icons.forEachIndexed { index, icon ->
-                                        FloatingBottomBarItem(
-                                            onClick = { selectedPage = index },
-                                            modifier = Modifier.semantics { selected = page == index },
-                                        ) {
-                                            // 玻璃效果在滑动药丸下渲染一层着色副本。
-                                            val tint = if (!glassEnabled && page == index) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurface
-                                            Icon(icon, null, tint = tint)
-                                            Text(pages[index], fontSize = 11.sp, lineHeight = 14.sp, color = tint, maxLines = 1)
+                            val inSelection = page == 1 && selecting
+                            // 多选栏与导航栏同高同位，交叉淡入淡出即为一次平滑的形态切换。
+                            AnimatedVisibility(!inSelection, enter = fadeIn(tween(200)) + slideInVertically(tween(260, easing = FastOutSlowInEasing)) { it / 3 },
+                                exit = fadeOut(tween(120)) + slideOutVertically(tween(160)) { it / 3 }, label = "navBar") {
+                                if (Build.VERSION.SDK_INT < 33) {
+                                    PlainFloatingBar(page, pages, icons) { selectedPage = it }
+                                } else {
+                                    FloatingBottomBar(
+                                        modifier = Modifier.widthIn(max = 480.dp).fillMaxWidth(),
+                                        selectedIndex = { page }, onSelected = { selectedPage = it },
+                                        backdrop = glassBackdrop, tabsCount = 4, isBlurEnabled = glassEnabled, isGlassEnabled = config.liquidGlass,
+                                    ) {
+                                        icons.forEachIndexed { index, icon ->
+                                            FloatingBottomBarItem(
+                                                onClick = { selectedPage = index },
+                                                modifier = Modifier.semantics { selected = page == index },
+                                            ) {
+                                                // 玻璃效果在滑动药丸下渲染一层着色副本。
+                                                val tint = if (!glassEnabled && page == index) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurface
+                                                Icon(icon, null, tint = tint)
+                                                Text(pages[index], fontSize = 11.sp, lineHeight = 14.sp, color = tint, maxLines = 1)
+                                            }
                                         }
                                     }
                                 }
                             }
+                            AnimatedVisibility(inSelection, enter = fadeIn(tween(200)) + slideInVertically(tween(280, easing = FastOutSlowInEasing)) { it / 2 },
+                                exit = fadeOut(tween(120)) + slideOutVertically(tween(160)) { it / 2 }, label = "selectionBar") {
+                                val visible = visibleTasks(tasks, downloadFilter, search.text.toString().trim())
+                                SelectionActionBar(
+                                    count = selection.size, total = visible.size,
+                                    allSelected = visible.isNotEmpty() && visible.all { it.id in selection },
+                                    onClose = { exitSelection() },
+                                    onToggleAll = {
+                                        val all = visible.isNotEmpty() && visible.all { it.id in selection }
+                                        selection = if (all) selection - visible.map { it.id }.toSet()
+                                        else selection + visible.map { it.id }.toSet()
+                                    },
+                                    onDelete = { if (selection.isNotEmpty()) confirmDeleteTasks(selection.toList(), slideOut = false) },
+                                    modifier = Modifier.widthIn(max = 480.dp).fillMaxWidth())
+                            }
+                        }
+                    } else if (page == 1 && selecting) {
+                        Box(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp), contentAlignment = Alignment.Center) {
+                            val visible = visibleTasks(tasks, downloadFilter, search.text.toString().trim())
+                            SelectionActionBar(
+                                count = selection.size, total = visible.size,
+                                allSelected = visible.isNotEmpty() && visible.all { it.id in selection },
+                                onClose = { exitSelection() },
+                                onToggleAll = {
+                                    val all = visible.isNotEmpty() && visible.all { it.id in selection }
+                                    selection = if (all) selection - visible.map { it.id }.toSet()
+                                    else selection + visible.map { it.id }.toSet()
+                                },
+                                onDelete = { if (selection.isNotEmpty()) confirmDeleteTasks(selection.toList(), slideOut = false) },
+                                modifier = Modifier.widthIn(max = 480.dp).fillMaxWidth())
                         }
                     } else {
                         BlurredBar(backdrop) {
@@ -464,9 +610,20 @@ private fun LeiFetchScreen(vm: MainViewModel, startPage: Int = 0) {
                                 search.edit { replace(0, length, "") }; showSearch = false })
                         1 -> {
                             transferItems(tasks, vm, downloadFilter, { downloadFilter = it },
-                                showSearch, search, expandedTask,
+                                search, expandedTask,
                                 onExpand = { expandedTask = if (expandedTask == it) "" else it },
-                                onDelete = { confirmDelete = it }, onNew = { showNewDownload = true })
+                                onNew = { showNewDownload = true },
+                                actions = TransferActions(
+                                    selecting = selecting, selected = selection, pending = hiddenRows,
+                                    revealedRow = revealedRow, onRevealedRow = { revealedRow = it },
+                                    onToggleSelect = { id -> selection = if (id in selection) selection - id else selection + id },
+                                    onSelect = { id ->
+                                        // 右滑即进入多选；已展开的详情先收起，避免行高变化打断动画。
+                                        if (!selecting) { selecting = true; expandedTask = ""; showSearch = false }
+                                        selection = if (id in selection) selection - id else selection + id
+                                    },
+                                    onDelete = { confirmDeleteTasks(it, slideOut = true) },
+                                ))
                         }
                         2 -> pluginItems(config, vm)
                         3 -> settingsItems(config, vm,
@@ -520,11 +677,15 @@ private fun LeiFetchScreen(vm: MainViewModel, startPage: Int = 0) {
         // 在 NavDisplay 之后注册：禁用预测时手势先被消费，完成后正常出栈。
         NavigationBackHandler(
             state = rememberNavigationEventState(NavigationEventInfo.None),
-            isBackEnabled = backStack.size > 1 && !usePredictiveBack && confirmDelete.isEmpty(),
+            isBackEnabled = backStack.size > 1 && !usePredictiveBack && pendingDelete.isEmpty() && !selecting,
             onBackCompleted = ::navigateBack,
         )
-        val deleting = tasks.firstOrNull { it.id == confirmDelete }
-        NewDownloadDialog(showNewDownload, onDismiss = { showNewDownload = false },
+        // 多选时返回先退出多选；注册在 NavDisplay 之后，优先于导航手势。
+        BackHandler(enabled = selecting) { exitSelection() }
+        // 搜索中返回先收起搜索框，而不是退出页面。
+        BackHandler(enabled = !selecting && showSearch) { showSearch = false; search.edit { replace(0, length, "") } }
+        val deleting = tasks.filter { it.id in pendingDelete }
+        NewDownloadTopSheet(sheetState, open = showNewDownload, onDismiss = { showNewDownload = false },
             onAdd = { url -> vm.add(url) { showNewDownload = false; selectedPage = 1; downloadFilter = 0 } })
         val clipLink by vm.clipboardSuggest.collectAsStateWithLifecycle()
         SuperDialog(show = clipLink != null, title = "发现下载链接", onDismissRequest = { vm.clipboardSuggest.value = null }) {
@@ -546,13 +707,27 @@ private fun LeiFetchScreen(vm: MainViewModel, startPage: Int = 0) {
                 }
             }
         }
-        SuperDialog(show = confirmDelete.isNotEmpty(), title = "删除文件？", onDismissRequest = { confirmDelete = "" }) {
+        // 删除确认：任务行已滑出屏幕等待这一步，确认即连同文件删除，取消则反向弹回原位。
+        SuperDialog(show = pendingDelete.isNotEmpty(),
+            title = when {
+                deleting.size > 1 -> "删除 ${deleting.size} 个任务？"
+                deleting.any { it.uri.isNotEmpty() } -> "删除文件？"
+                else -> "移除下载记录？"
+            },
+            onDismissRequest = { cancelDeleteTasks() }) {
             Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                Text(deleting?.name.orEmpty(), fontSize = 14.sp)
-                Text("同时删除已保存的文件与下载记录。", fontSize = 13.sp, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                Text(when {
+                    deleting.size > 1 -> deleting.take(3).joinToString("、") { it.name } +
+                        if (deleting.size > 3) " 等 ${deleting.size} 个文件" else ""
+                    else -> deleting.firstOrNull()?.name.orEmpty()
+                }, fontSize = 14.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                Text(if (deleting.any { it.uri.isNotEmpty() }) "同时删除已保存的文件与下载记录。"
+                    else "只移除任务记录，不会影响已下载的文件。",
+                    fontSize = 13.sp, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    TextButton("取消", onClick = { confirmDelete = "" }, modifier = Modifier.weight(1f))
-                    TextButton("删除", onClick = { deleting?.let(vm::delete); confirmDelete = "" }, modifier = Modifier.weight(1f))
+                    TextButton("取消", onClick = { cancelDeleteTasks() }, modifier = Modifier.weight(1f))
+                    TextButton(if (deleting.any { it.uri.isNotEmpty() }) "删除" else "移除",
+                        onClick = { runDelete(); exitSelection() }, modifier = Modifier.weight(1f))
                 }
             }
         }

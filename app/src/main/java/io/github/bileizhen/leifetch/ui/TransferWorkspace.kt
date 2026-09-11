@@ -7,7 +7,13 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -18,6 +24,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyListScope
@@ -50,18 +57,23 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathBuilder
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
@@ -69,8 +81,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.github.bileizhen.leifetch.ui.component.miuix.animation.DampedDragAnimation
+import kotlin.math.roundToInt
+import kotlin.math.sin
+import kotlin.math.cos
+import kotlin.math.PI
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -80,6 +98,17 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 import kotlinx.coroutines.delay
 import java.text.DateFormat
 import java.util.Date
+
+/** 用四段三次曲线画一个圆：PathBuilder 没有 arc 指令。 */
+private fun PathBuilder.circle(cx: Float, cy: Float, radius: Float) {
+    val handle = radius * 0.5523f
+    moveTo(cx, cy - radius)
+    curveTo(cx + handle, cy - radius, cx + radius, cy - handle, cx + radius, cy)
+    curveTo(cx + radius, cy + handle, cx + handle, cy + radius, cx, cy + radius)
+    curveTo(cx - handle, cy + radius, cx - radius, cy + handle, cx - radius, cy)
+    curveTo(cx - radius, cy - handle, cx - handle, cy - radius, cx, cy - radius)
+    close()
+}
 
 /** A small, consistent outline set for the transfer workspace. */
 internal object TransferIcons {
@@ -106,10 +135,16 @@ internal object TransferIcons {
         moveTo(12f, 18f); lineTo(12f, 22f)
     }
     val Settings = icon("Settings") {
-        moveTo(4f, 7f); lineTo(8f, 7f); moveTo(14f, 7f); lineTo(20f, 7f)
-        moveTo(4f, 17f); lineTo(12f, 17f); moveTo(18f, 17f); lineTo(20f, 17f)
-        moveTo(8f, 4f); lineTo(14f, 4f); lineTo(14f, 10f); lineTo(8f, 10f); close()
-        moveTo(12f, 14f); lineTo(18f, 14f); lineTo(18f, 20f); lineTo(12f, 20f); close()
+        // 齿轮：外圈 + 中心孔 + 8 颗齿。齿起于外圈半径，圆头描边负责收尾。
+        circle(12f, 12f, 6.2f)
+        circle(12f, 12f, 2.1f)
+        repeat(8) { index ->
+            val angle = (index * 45.0 + 22.5) * PI / 180.0
+            val cosA = cos(angle).toFloat()
+            val sinA = sin(angle).toFloat()
+            moveTo(12f + 6.2f * cosA, 12f + 6.2f * sinA)
+            lineTo(12f + 9.4f * cosA, 12f + 9.4f * sinA)
+        }
     }
     val File = icon("File") {
         moveTo(14f, 3f); lineTo(5f, 3f); lineTo(5f, 21f); lineTo(19f, 21f); lineTo(19f, 8f); close()
@@ -118,6 +153,22 @@ internal object TransferIcons {
     }
     val Pause = icon("Pause") {
         moveTo(8f, 5f); lineTo(8f, 19f); moveTo(16f, 5f); lineTo(16f, 19f)
+    }
+    val Trash = icon("Trash") {
+        moveTo(4f, 7f); lineTo(20f, 7f)
+        moveTo(9.5f, 7f); lineTo(9.5f, 4f); lineTo(14.5f, 4f); lineTo(14.5f, 7f)
+        moveTo(6.5f, 7f); lineTo(7.4f, 20f); lineTo(16.6f, 20f); lineTo(17.5f, 7f)
+        moveTo(10.5f, 10.5f); lineTo(10.5f, 16.5f); moveTo(13.5f, 10.5f); lineTo(13.5f, 16.5f)
+    }
+    val SelectAll = icon("SelectAll") {
+        moveTo(12f, 3f); curveTo(17f, 3f, 21f, 7f, 21f, 12f); curveTo(21f, 17f, 17f, 21f, 12f, 21f)
+        curveTo(7f, 21f, 3f, 17f, 3f, 12f); curveTo(3f, 7f, 7f, 3f, 12f, 3f); close()
+        moveTo(8f, 12.4f); lineTo(11f, 15.4f); lineTo(16.4f, 9f)
+    }
+    val Deselect = icon("Deselect") {
+        moveTo(12f, 3f); curveTo(17f, 3f, 21f, 7f, 21f, 12f); curveTo(21f, 17f, 17f, 21f, 12f, 21f)
+        curveTo(7f, 21f, 3f, 17f, 3f, 12f); curveTo(3f, 7f, 7f, 3f, 12f, 3f); close()
+        moveTo(8.6f, 8.6f); lineTo(15.4f, 15.4f); moveTo(15.4f, 8.6f); lineTo(8.6f, 15.4f)
     }
 }
 
@@ -129,6 +180,24 @@ internal fun Task.matchesFilter(filter: Int) = when (filter) {
     2 -> state == "已完成"
     else -> true
 }
+
+/** 当前可见任务：分类与搜索同一口径，列表与「全选」共用，避免两处过滤条件走偏。 */
+internal fun visibleTasks(tasks: List<Task>, filter: Int, query: String) =
+    tasks.filter { it.matchesFilter(filter) && (query.isEmpty() || it.name.contains(query, true) || it.source.contains(query, true)) }
+
+/** 下载页的多选状态与回调；状态由页面层持有，行只负责呈现与触发。 */
+internal class TransferActions(
+    val selecting: Boolean,
+    val selected: Set<String>,
+    /** 删除待确认的任务 id：这些行先滑出屏幕，确认后真正删除，取消则弹回。 */
+    val pending: Set<String>,
+    val revealedRow: String,
+    val onRevealedRow: (String) -> Unit,
+    val onToggleSelect: (String) -> Unit,
+    /** 右滑提交：未选中则选中，已选中则取消。 */
+    val onSelect: (String) -> Unit,
+    val onDelete: (List<String>) -> Unit,
+)
 
 @Composable
 internal fun TransferSidebar(selected: Int, labels: List<String>, icons: List<ImageVector>,
@@ -191,7 +260,7 @@ internal fun LazyListScope.overviewItems(tasks: List<Task>, config: Config, vm: 
     if (recent.isEmpty()) item {
         EmptyTransfers("还没有下载任务", "添加一个链接，或从已配置的应用接管下载。", onNew = onNew)
     } else items(recent, key = { "recent-${it.id}" }) { task ->
-        TransferRow(task, false, onExpand = { onTask(task.id) },
+        TransferRow(task, false, onClick = { onTask(task.id) },
             onPrimary = { if (task.isTransferring()) vm.control(task, false) else if (task.canStart()) vm.start(task.id) else onTask(task.id) },
             onCancel = {}, onDelete = {})
     }
@@ -330,10 +399,10 @@ private fun SummaryNumber(label: String, count: Int, modifier: Modifier, onClick
 }
 
 internal fun LazyListScope.transferItems(tasks: List<Task>, vm: MainViewModel, filter: Int,
-    onFilter: (Int) -> Unit, showSearch: Boolean, search: TextFieldState, expanded: String,
-    onExpand: (String) -> Unit, onDelete: (String) -> Unit, onNew: () -> Unit) {
+    onFilter: (Int) -> Unit, search: TextFieldState, expanded: String,
+    onExpand: (String) -> Unit, onNew: () -> Unit, actions: TransferActions) {
     val query = search.text.toString().trim()
-    val visible = tasks.filter { it.matchesFilter(filter) && (query.isEmpty() || it.name.contains(query, true) || it.source.contains(query, true)) }
+    val visible = visibleTasks(tasks, filter, query)
     item {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             MutedText("${tasks.size} 个任务 · ${tasks.count { it.isTransferring() }} 个进行中")
@@ -342,10 +411,6 @@ internal fun LazyListScope.transferItems(tasks: List<Task>, vm: MainViewModel, f
     }
     item {
         FilterBar(filter, tasks, onFilter)
-    }
-    if (showSearch) item {
-        TextField(state = search, label = "搜索文件名或来源", useLabelAsPlaceholder = true,
-            lineLimits = TextFieldLineLimits.SingleLine, leadingIcon = { Icon(Icons.Rounded.Search, null) }, modifier = Modifier.fillMaxWidth())
     }
     if (visible.any { it.canStart() || it.isTransferring() }) item {
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically,
@@ -357,18 +422,33 @@ internal fun LazyListScope.transferItems(tasks: List<Task>, vm: MainViewModel, f
             MutedText("${visible.size} 个任务", 12)
         }
     }
+    // 多选时给出本组的批量入口，长列表里也能一次选完当前筛选结果。
+    if (actions.selecting) item {
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            val all = visible.isNotEmpty() && visible.all { it.id in actions.selected }
+            TextButton(if (all) "取消本组全选" else "选中本组",
+                enabled = visible.isNotEmpty(),
+                onClick = { visible.forEach { if (all == (it.id in actions.selected)) actions.onToggleSelect(it.id) } })
+            MutedText("${actions.selected.size} 个已选中", 12)
+        }
+    }
     if (visible.isEmpty()) item {
+        // 每个分类给各自的空态说法；"进行中"以前借用的是"全部"的文案。
         val title = when {
             query.isNotEmpty() -> "没有找到相关下载"
             filter == 1 -> "没有已停止的任务"
             filter == 2 -> "还没有已完成的文件"
+            filter == 0 -> "没有正在进行的任务"
             else -> "下载列表很清爽"
         }
         EmptyTransfers(title, when {
             query.isNotEmpty() -> "试试其他文件名，或切换任务分类。"
-            filter == 2 -> "下载完成后，可以在这里打开和分享文件。"
             filter == 1 -> "暂停、失败或取消的下载会显示在这里。"
-            else -> "点右上角的加号，添加你的第一个链接。"
+            filter == 2 -> "下载完成后，可以在这里打开和分享文件。"
+            filter == 0 -> "待确认与传输中的任务会显示在这里。"
+            // 新建下载的入口是「下拉顶部标题」弹出的顶弹层，右上角早已不是加号。
+            else -> "下拉顶部标题，或点下面的按钮添加下载。"
         }, onNew = if (query.isEmpty() && filter != 1) onNew else null)
     }
     itemsIndexed(visible, key = { _, task -> "transfer-${task.id}" }) { index, task ->
@@ -376,19 +456,138 @@ internal fun LazyListScope.transferItems(tasks: List<Task>, vm: MainViewModel, f
         // 分类切换时列表项淡入淡出并滑动到新位置，而不是瞬间替换。
         Box(Modifier.animateItem()) {
             StaggeredEntrance(index) {
-                TransferRow(task, expanded == task.id, onExpand = { onExpand(task.id) },
-                    onPrimary = {
-                        when {
-                            task.state == "已完成" -> fileAction(context, task, false)
-                            task.isTransferring() -> vm.control(task, false)
-                            task.canStart() -> vm.start(task.id)
-                            else -> onExpand(task.id)
-                        }
-                    }, onCancel = { vm.control(task, true) }, onDelete = {
-                        if (task.state == "已取消") vm.delete(task) else onDelete(task.id)
-                    })
+                val selected = task.id in actions.selected
+                SwipeActionRow(
+                    // 右滑露出多选：已选中的行给出取消，未选中的行给出多选。
+                    start = SwipeAction(
+                        label = if (selected) "取消" else "多选",
+                        icon = if (selected) TransferIcons.Deselect else TransferIcons.SelectAll,
+                        colors = listOf(MiuixTheme.colorScheme.primary, MiuixTheme.colorScheme.primary.copy(alpha = .72f)),
+                    ),
+                    end = SwipeAction("删除", TransferIcons.Trash, SwipeDeleteColors),
+                    revealed = actions.revealedRow == task.id,
+                    onRevealChange = { open ->
+                        if (open) actions.onRevealedRow(task.id)
+                        else if (actions.revealedRow == task.id) actions.onRevealedRow("")
+                    },
+                    removing = task.id in actions.pending,
+                    onStart = { actions.onSelect(task.id) },
+                    onEnd = { actions.onDelete(listOf(task.id)) },
+                ) {
+                    TransferRow(task, expanded == task.id && !actions.selecting,
+                        selecting = actions.selecting, selected = selected,
+                        // 露出的行动作优先：先收回面板，再处理多选或展开。
+                        onClick = {
+                            when {
+                                actions.revealedRow == task.id -> actions.onRevealedRow("")
+                                actions.selecting -> actions.onToggleSelect(task.id)
+                                else -> onExpand(task.id)
+                            }
+                        },
+                        onPrimary = {
+                            when {
+                                task.state == "已完成" -> fileAction(context, task, false)
+                                task.isTransferring() -> vm.control(task, false)
+                                task.canStart() -> vm.start(task.id)
+                                else -> onExpand(task.id)
+                            }
+                        }, onCancel = { vm.control(task, true) },
+                        onDelete = { actions.onDelete(listOf(task.id)) })
+                }
             }
         }
+    }
+}
+
+/** 顶栏里的搜索行：从大标题下方展开、钉在顶栏中，展开即聚焦。
+ *  右侧那个放大镜就是顶栏图标落下来的落点，顶栏原位则由渐显的 ✕ 接手关闭。 */
+@Composable
+internal fun TaskSearchBar(search: TextFieldState, open: Boolean) {
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focus.requestFocus() }
+    // 顶栏图标到本行的垂直距离（实测 54.9dp）：落下来的行程与之一致，才像同一个图标。
+    val drop = with(LocalDensity.current) { 55.dp.roundToPx() }
+    // 框右端只留 12dp：图标压在框的右内侧（框把它包住），中心距右 36dp 与顶栏图标同心。
+    Box(Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 2.dp, bottom = 10.dp)) {
+        TextField(state = search, label = "搜索文件名或来源", useLabelAsPlaceholder = true,
+            lineLimits = TextFieldLineLimits.SingleLine,
+            // 给图标让出位置，文字不会钻到图标底下。
+            trailingIcon = { Spacer(Modifier.width(40.dp)) },
+            modifier = Modifier.fillMaxWidth().focusRequester(focus))
+        // 叠在搜索框上层：向上飞出去时不会被框挡住，也不会被裁掉。
+        // 必须由 open 驱动：写成常量 true 的话退出动画永远不跑，关闭时不会淡出，
+        // 就会和顶栏升上来的那个同时存在 —— 看着就是"两个搜索图标"。
+        AnimatedVisibility(open,
+            enter = fadeIn(tween(100, delayMillis = 120)) + slideInVertically(spring(dampingRatio = 0.8f, stiffness = 620f)) { -drop },
+            exit = fadeOut(tween(70)),
+            modifier = Modifier.align(Alignment.CenterEnd).padding(end = 4.dp),
+            label = "searchGlyph") {
+            IconButton(onClick = { focus.requestFocus() }) {
+                Icon(Icons.Rounded.Search, "搜索", tint = MiuixTheme.colorScheme.onSurface)
+            }
+        }
+    }
+}
+
+
+/** 多选操作栏：下载页进入多选时替换底部导航，未选中的项不可删除。 */
+@Composable
+internal fun SelectionActionBar(count: Int, total: Int, allSelected: Boolean,
+    onClose: () -> Unit, onToggleAll: () -> Unit, onDelete: () -> Unit, modifier: Modifier = Modifier) {
+    val colors = MiuixTheme.colorScheme
+    Card(modifier.height(64.dp), cornerRadius = 32.dp, insideMargin = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
+        // 三枚按钮之间要留出间距，否则相邻胶囊会粘成一条；圆角取按钮半高，与栏本身的胶囊一致。
+        Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onClose, modifier = Modifier.size(40.dp).clip(RoundedCornerShape(20.dp))
+                .background(colors.onSurface.copy(alpha = .06f))) {
+                Icon(Icons.Rounded.Close, "退出多选", tint = colors.onSurface, modifier = Modifier.size(19.dp))
+            }
+            Text(if (count > 0) "已选 $count 项" else "选择任务", fontSize = 14.sp, maxLines = 1,
+                fontWeight = FontWeight.Medium,
+                color = if (count > 0) colors.onSurface else colors.onSurfaceVariantSummary,
+                modifier = Modifier.padding(start = 4.dp).weight(1f))
+            TextButton(if (allSelected) "取消全选" else "全选", onClick = onToggleAll, enabled = total > 0,
+                minWidth = 0.dp, minHeight = 0.dp, cornerRadius = 21.dp,
+                insideMargin = PaddingValues(horizontal = 13.dp, vertical = 11.dp))
+            TextButton("删除", onClick = onDelete, enabled = count > 0,
+                minWidth = 0.dp, minHeight = 0.dp, cornerRadius = 21.dp,
+                insideMargin = PaddingValues(horizontal = 16.dp, vertical = 11.dp),
+                colors = ButtonDefaults.textButtonColors(
+                    color = colors.error.copy(alpha = 0.13f),
+                    disabledColor = colors.onSurface.copy(alpha = 0.05f),
+                    textColor = colors.error,
+                    disabledTextColor = colors.onSurfaceVariantSummary.copy(alpha = 0.5f)))
+        }
+    }
+}
+
+/** 多选标记：未选中是细描边圆圈，选中时填充并让对勾分段画出（圆先弹一下）。 */
+@Composable
+private fun SelectMark(selected: Boolean, modifier: Modifier = Modifier) {
+    val colors = MiuixTheme.colorScheme
+    val progress by animateFloatAsState(if (selected) 1f else 0f,
+        animationSpec = spring(dampingRatio = 0.58f, stiffness = 1200f), label = "selectMark")
+    val fill by animateColorAsState(if (selected) colors.primary else Color.Transparent,
+        animationSpec = tween(200), label = "selectFill")
+    val ring by animateColorAsState(if (selected) colors.primary else colors.onSurface.copy(alpha = .3f),
+        animationSpec = tween(200), label = "selectRing")
+    Canvas(modifier.size(22.dp).semantics { stateDescription = if (selected) "已选中" else "未选中" }) {
+        val radius = size.minDimension / 2f
+        val center = this.center
+        drawCircle(fill, radius, center)
+        drawCircle(ring, radius - 0.8.dp.toPx(), center, style = Stroke(1.6.dp.toPx()))
+        val start = Offset(size.width * .28f, size.height * .52f)
+        val elbow = Offset(size.width * .44f, size.height * .68f)
+        val tip = Offset(size.width * .74f, size.height * .33f)
+        val stroke = 2.2.dp.toPx()
+        val first = ((progress - 0.08f) / 0.45f).coerceIn(0f, 1f)
+        val second = ((progress - 0.45f) / 0.55f).coerceIn(0f, 1f)
+        val alpha = (progress * 1.6f).coerceIn(0f, 1f)
+        if (first > 0f) drawLine(colors.onPrimary.copy(alpha = alpha), start,
+            start + (elbow - start) * first, stroke, StrokeCap.Round)
+        if (second > 0f) drawLine(colors.onPrimary.copy(alpha = alpha), elbow,
+            elbow + (tip - elbow) * second, stroke, StrokeCap.Round)
     }
 }
 
@@ -409,7 +608,9 @@ internal fun StaggeredEntrance(index: Int, baseDelayMs: Long = 0, content: @Comp
             appeared = true
         }
     }
-    val progress by animateFloatAsState(
+    // 保留 State 而不是解包成值：动画只在绘制阶段读取，入场期间不会逐帧重组列表项
+    // （切换筛选时同时有近十条在播，组合期读取是当时掉帧的主因）。
+    val progress = animateFloatAsState(
         targetValue = if (appeared) 1f else 0f,
         animationSpec = tween(durationMillis = 380, easing = FastOutSlowInEasing),
         label = "entrance")
@@ -418,30 +619,96 @@ internal fun StaggeredEntrance(index: Int, baseDelayMs: Long = 0, content: @Comp
             if (!inView && coords.boundsInWindow().top < viewportBottomPx) inView = true
         }
         .graphicsLayer {
-            alpha = progress
-            val scale = 0.8f + 0.2f * progress
+            val value = progress.value
+            alpha = value
+            val scale = 0.8f + 0.2f * value
             scaleX = scale
             scaleY = scale
-            translationY = (1f - progress) * 22.dp.toPx()
+            translationY = (1f - value) * 22.dp.toPx()
         }) { content() }
 }
 
 @Composable
 private fun FilterBar(selected: Int, tasks: List<Task>, onSelect: (Int) -> Unit) {
     val colors = MiuixTheme.colorScheme
-    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).selectableGroup(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        listOf("进行中", "已停止", "已完成", "全部").forEachIndexed { index, label ->
-            val active = index == selected
-            // 选中态颜色平滑过渡，计数随选中淡入淡出，避免硬切。
-            val background by animateColorAsState(if (active) colors.primary else colors.surfaceContainer, label = "filterBg")
-            val foreground by animateColorAsState(if (active) colors.onPrimary else colors.onSurfaceVariantSummary, label = "filterFg")
-            Row(Modifier.clip(RoundedCornerShape(12.dp))
-                .background(background)
-                .selectable(active, role = Role.Tab, onClick = { onSelect(index) })
-                .padding(horizontal = 15.dp, vertical = 14.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(label, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = foreground)
-                AnimatedVisibility(active, enter = fadeIn() + expandHorizontally(), exit = fadeOut() + shrinkHorizontally()) {
-                    Text("${tasks.count { it.matchesFilter(index) }}", fontSize = 13.sp, color = foreground.copy(alpha = .75f))
+    val labels = listOf("进行中", "已停止", "已完成", "全部")
+    // 分段控件：一条轨道 + 一块滑动的选中指示。按住可左右拖动、松手吸附到最近的分段，
+    // 与底部悬浮导航栏共用同一套 DampedDragAnimation，手感保持一致。
+    val inset = 3.dp
+    val density = LocalDensity.current
+    val animationScope = rememberCoroutineScope()
+    var trackWidth by remember { mutableFloatStateOf(0f) }
+    val insetPx = with(density) { inset.toPx() }
+    val segmentPx = ((trackWidth - 2 * insetPx) / labels.size).coerceAtLeast(1f)
+    val latestSelected by rememberUpdatedState(selected)
+    val latestOnSelect by rememberUpdatedState(onSelect)
+    val latestSegment by rememberUpdatedState(segmentPx)
+    val damped = remember(animationScope, labels.size) {
+        DampedDragAnimation(
+            animationScope = animationScope,
+            initialValue = selected.toFloat(),
+            valueRange = 0f..(labels.size - 1).toFloat(),
+            visibilityThreshold = 0.001f,
+            initialScale = 1f,
+            pressedScale = 1f,
+            onDragStarted = {},
+            onDragStopped = {},
+            onDrag = { _, _ -> },
+        )
+    }
+    // 自己接横向手势而不用 DampedDragAnimation 自带的检测器：那个不区分方向，
+    // 会把在轨道上起手的竖向滑动一起吃掉，列表就滚不动了。
+    val dragModifier = Modifier.pointerInput(damped, labels.size) {
+        detectHorizontalDragGestures(
+            onDragStart = { damped.press() },
+            onDragEnd = {
+                // 松手吸附到最近分段；与当前选中相同就弹回原位，否则交给外层切筛选。
+                val target = damped.targetValue.roundToInt().coerceIn(0, labels.size - 1)
+                if (target == latestSelected) damped.animateToValue(target.toFloat()) else latestOnSelect(target)
+            },
+            onDragCancel = { damped.animateToValue(latestSelected.toFloat()) },
+            onHorizontalDrag = { change, delta ->
+                change.consume()
+                val segment = latestSegment
+                if (segment > 0f) {
+                    damped.updateValue((damped.targetValue + delta / segment)
+                        .coerceIn(0f, (labels.size - 1).toFloat()))
+                }
+            },
+        )
+    }
+    // 点击分段或拖动提交后，指示块滑到新位置。
+    LaunchedEffect(selected) { damped.animateToValue(selected.toFloat()) }
+    Box(Modifier.widthIn(max = 480.dp).fillMaxWidth().height(46.dp)
+        .onSizeChanged { trackWidth = it.width.toFloat() }
+        .then(dragModifier)
+        .clip(RoundedCornerShape(12.dp)).background(colors.surfaceContainer)) {
+        Box(Modifier.fillMaxSize().padding(inset)) {
+            Box(Modifier
+                .layout { measurable, constraints ->
+                    // 内层 Box 已缩进 inset，这里只按位置平移、宽度取整段，四边留白才一致；
+                    // 半径取 12 - 3 = 9dp，与轨道内缘同心，内圆角就不会和外圆角错开。
+                    val segment = ((trackWidth - 2 * inset.toPx()) / labels.size).coerceAtLeast(1f)
+                    val placeable = measurable.measure(Constraints.fixed(segment.roundToInt(), constraints.maxHeight))
+                    layout(placeable.width, placeable.height) {
+                        placeable.place((damped.value * segment).roundToInt(), 0)
+                    }
+                }
+                .background(colors.primary, RoundedCornerShape(9.dp)))
+            Row(Modifier.fillMaxSize().selectableGroup()) {
+                labels.forEachIndexed { index, label ->
+                    val active = index == selected
+                    val foreground by animateColorAsState(if (active) colors.onPrimary else colors.onSurfaceVariantSummary,
+                        animationSpec = tween(200), label = "filterFg")
+                    Row(Modifier.weight(1f).fillMaxHeight()
+                        .clip(RoundedCornerShape(9.dp))
+                        .selectable(active, role = Role.Tab, onClick = { onSelect(index) }),
+                        horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+                        Text(label, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = foreground)
+                        // 计数只挂在选中段上；直接显示，不做宽度动画，避免逐帧改变分段布局。
+                        if (active) Text("${tasks.count { it.matchesFilter(index) }}", fontSize = 13.sp,
+                            color = foreground.copy(alpha = .75f), modifier = Modifier.padding(start = 6.dp))
+                    }
                 }
             }
         }
@@ -450,38 +717,66 @@ private fun FilterBar(selected: Int, tasks: List<Task>, onSelect: (Int) -> Unit)
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-internal fun TransferRow(task: Task, expanded: Boolean, onExpand: () -> Unit, onPrimary: () -> Unit,
-    onCancel: () -> Unit, onDelete: () -> Unit) {
+internal fun TransferRow(task: Task, expanded: Boolean, onClick: () -> Unit, onPrimary: () -> Unit,
+    onCancel: () -> Unit, onDelete: () -> Unit, selecting: Boolean = false, selected: Boolean = false) {
     val context = LocalContext.current
     val colors = MiuixTheme.colorScheme
     var linkMenu by remember { mutableStateOf(false) }
     val ratio = if (task.total > 0) (task.done.toDouble() / task.total).toFloat().coerceIn(0f, 1f) else 0f
     val completed = task.state == "已完成"
-    Card(Modifier.fillMaxWidth(), cornerRadius = 20.dp, insideMargin = PaddingValues(0.dp)) {
-        Column(Modifier.fillMaxWidth().combinedClickable(role = Role.Button,
-            onClickLabel = if (expanded) "收起详情" else "展开详情", onLongClickLabel = "打开快捷菜单",
-            onLongClick = { linkMenu = true }, onClick = onExpand)
-            .semantics { stateDescription = if (expanded) "已展开" else "已收起" }.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+    // 选中态整行染色：底色在卡片自身颜色上叠加主色，避免半透明卡片透出下层。
+    val container by animateColorAsState(
+        if (selected) colors.primary.copy(alpha = .16f).compositeOver(colors.surfaceContainer) else colors.surfaceContainer,
+        animationSpec = tween(220), label = "rowContainer")
+    val mark = selected
+    Card(Modifier.fillMaxWidth(), cornerRadius = 20.dp, insideMargin = PaddingValues(0.dp),
+        colors = CardDefaults.defaultColors(color = container)) {
+        Column(Modifier.fillMaxWidth().combinedClickable(role = if (selecting) Role.Checkbox else Role.Button,
+            onClickLabel = when {
+                selecting && mark -> "取消选择"
+                selecting -> "选择"
+                expanded -> "收起详情"
+                else -> "展开详情"
+            },
+            onLongClickLabel = "打开快捷菜单",
+            onLongClick = { linkMenu = true }, onClick = onClick)
+            .semantics {
+                stateDescription = when {
+                    selecting -> if (mark) "已选中" else "未选中"
+                    expanded -> "已展开"
+                    else -> "已收起"
+                }
+                this.selected = selecting && mark
+            }.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // 勾选动画的宽度也随出现一起收起，行内容重排不会在结尾跳一下。
+                AnimatedVisibility(selecting, enter = fadeIn(tween(160)) + expandHorizontally(tween(240, easing = FastOutSlowInEasing)),
+                    exit = fadeOut(tween(100)) + shrinkHorizontally(tween(200, easing = FastOutSlowInEasing))) {
+                    SelectMark(mark, Modifier.padding(end = 12.dp))
+                }
                 IconTile(TransferIcons.File)
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                Column(Modifier.weight(1f).padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                     Text(task.name, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     MutedText(listOf(if (completed) bytes(task.done) else if (task.total > 0) bytes(task.total) else "大小未知", task.source).joinToString(" · "), 12, maxLines = 1)
                 }
-                IconButton(onClick = onPrimary, modifier = Modifier.size(48.dp).clip(RoundedCornerShape(16.dp))
-                    .background(colors.primary.copy(alpha = .09f))) {
-                    Icon(when {
-                        completed -> Icons.Rounded.Check
-                        task.isTransferring() -> TransferIcons.Pause
-                        task.state == "已取消" -> Icons.Rounded.MoreVert
-                        else -> Icons.Rounded.PlayArrow
-                    }, when {
-                        completed -> "打开文件"
-                        task.isTransferring() -> "暂停下载"
-                        task.state == "待确认" -> "确认下载"
-                        task.state == "已取消" -> "任务详情"
-                        else -> "继续下载"
-                    }, tint = colors.primary, modifier = Modifier.size(22.dp))
+                // 多选时收起主操作按钮：整行的点击都用于勾选，避免「点按」有两种含义。
+                AnimatedVisibility(!selecting, enter = fadeIn(tween(160)) + expandHorizontally(tween(240, easing = FastOutSlowInEasing)),
+                    exit = fadeOut(tween(100)) + shrinkHorizontally(tween(200, easing = FastOutSlowInEasing))) {
+                    IconButton(onClick = onPrimary, modifier = Modifier.padding(start = 12.dp).size(48.dp).clip(RoundedCornerShape(16.dp))
+                        .background(colors.primary.copy(alpha = .09f))) {
+                        Icon(when {
+                            completed -> Icons.Rounded.Check
+                            task.isTransferring() -> TransferIcons.Pause
+                            task.state == "已取消" -> Icons.Rounded.MoreVert
+                            else -> Icons.Rounded.PlayArrow
+                        }, when {
+                            completed -> "打开文件"
+                            task.isTransferring() -> "暂停下载"
+                            task.state == "待确认" -> "确认下载"
+                            task.state == "已取消" -> "任务详情"
+                            else -> "继续下载"
+                        }, tint = colors.primary, modifier = Modifier.size(22.dp))
+                    }
                 }
             }
             if (task.isTransferring() || task.state == "已暂停") {
@@ -555,8 +850,7 @@ internal fun TransferRow(task: Task, expanded: Boolean, onExpand: () -> Unit, on
     }
 }
 
-/** 任务详情三视图:信息 / 分段点阵 / 速度曲线,数据来自内存遥测注册表。 */
-@Composable
+/** 任务详情三视图:信息 / 分段点阵 / 速度曲线,数据来自内存遥测注册表。 */@Composable
 private fun TaskDetailTabs(task: Task) {
     val stats by (LocalContext.current.applicationContext as LeiFetchApp).telemetry.flow(task.id).collectAsStateWithLifecycle()
     var view by rememberSaveable(task.id) { mutableStateOf(0) }
@@ -710,26 +1004,7 @@ private fun formatDuration(ms: Long): String {
     return if (total < 60) "$total 秒" else "%d 分 %02d 秒".format(total / 60, total % 60)
 }
 
-@Composable
-internal fun NewDownloadDialog(show: Boolean, onDismiss: () -> Unit, onAdd: (String) -> Unit) {
-    val url = rememberTextFieldState()
-    var attempted by rememberSaveable { mutableStateOf(false) }
-    val parsed = Uri.parse(url.text.toString().trim())
-    val valid = parsed.scheme in setOf("http", "https") && !parsed.host.isNullOrBlank()
-    LaunchedEffect(show) { if (!show) { url.edit { replace(0, length, "") }; attempted = false } }
-    OverlayDialog(show = show, title = "新建下载", onDismissRequest = onDismiss) {
-        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            MutedText("添加 HTTP 或 HTTPS 文件链接，确认后开始下载。")
-            TextField(state = url, label = "粘贴下载链接", modifier = Modifier.fillMaxWidth(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), lineLimits = TextFieldLineLimits.SingleLine)
-            if (attempted && !valid) Text("请输入有效的 HTTP(S) 下载地址", fontSize = 13.sp, color = MiuixTheme.colorScheme.error)
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                TextButton("取消", onClick = onDismiss, modifier = Modifier.weight(1f))
-                TextButton("添加任务", onClick = { attempted = true; if (valid) onAdd(url.text.toString().trim()) }, modifier = Modifier.weight(1f))
-            }
-        }
-    }
-}
+// 原 NewDownloadDialog 居中弹窗已由 NewDownloadSheet 的顶弹层替代（顶栏下拉唤出）。
 
 @Composable
 private fun StateLabel(state: String) {
