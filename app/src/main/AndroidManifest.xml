@@ -19,6 +19,17 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- Via 第三方下载器 / 系统分享接收入口：ACTION_SEND 文本里的下载地址（见 DownloaderActivity）。
+            Via 用显式组件调起白名单应用，此过滤器同时让 LeiFetch 出现在系统分享菜单。 -->
+        <activity android:name=".DownloaderActivity" android:exported="true"
+            android:excludeFromRecents="true" android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
         <service android:name=".DownloadService" android:exported="false"
             android:foregroundServiceType="dataSync" />
         <provider android:name=".CaptureProvider" android:exported="true"

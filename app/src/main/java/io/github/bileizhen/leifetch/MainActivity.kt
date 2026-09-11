@@ -256,8 +256,8 @@ class MainActivity : ComponentActivity() {
 private val clipboardUrlPattern =
     Regex("""https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+""", RegexOption.IGNORE_CASE)
 
-/** 从剪贴板文本提取第一个有效的 HTTP(S) 链接；没有则返回 null。 */
-private fun clipboardUrl(text: String): String? {
+/** 从剪贴板 / 分享文本提取第一个有效的 HTTP(S) 链接；没有则返回 null。 */
+internal fun clipboardUrl(text: String): String? {
     val url = clipboardUrlPattern.find(text)?.value
         ?.trimEnd('.', ',', ';', ':', '(', ')', '"', '\'', '，', '。', '；', '：', '）', '”', '」', '》')
         ?: return null

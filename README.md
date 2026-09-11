@@ -21,6 +21,7 @@ LeiFetch 是一个 Android 下载接管模块。它通过 LSPosed Hook 捕获应
 - **NSFX 多线程内核**:单任务最多 16 线程、动态尾段拆分、断点恢复、指数退避、主机并发降级与全局连接 / 速度预算;每次跳转都更换签名 URL 的 CDN(如腾讯 cdntips)不会误报资源变化,断点可跨会话续传。
 - **GitHub 镜像加速**:自动识别 GitHub 直链下载(releases、archive、raw 等),经「镜像前缀 + 原链接」转发;每次下载开始时用下载地址本身并行实测各镜像,校验必须返回 206 分段响应且文件总长与直连一致(避免镜像返回错误页或旧文件),再取最快合格者;内置 5 个镜像站并支持自定义与手动指定。
 - **应用下载接管**:通用 DownloadManager / OkHttp / HttpURLConnection / WebView 捕获、Firefox GeckoView 适配,以及系统下载器插件(在 DownloadProvider 内集中捕获所有应用的 DownloadManager 入队,系统下载列表与通知入口改由 LeiFetch 呈现);发现的下载进入待确认列表,由你决定是否接管。
+- **分享接收**:按 Via 第三方下载器契约(ACTION_SEND 传入下载地址)提供接收入口,任何应用分享的文本链接都能转交 LeiFetch 立即下载,无需 Hook。
 - **任务详情三视图**:信息卡(传输 / 进度 / 连接 / 常规)、Motrix 式分段点阵(默认 1 MB 每片,绿色渐进填充,图例计数)和速度曲线(会话 60 秒 / 生命周期切换,均值、峰值、活跃时长)。
 - **实时卡片**:待确认(确认下载 / 忽略)、下载进度与完成(打开 / 分享)走 Android 16 原生实时通知接口,ColorOS 流体云等呈现形态由系统决定。
 - **传输工作台**:仪表盘实时速度曲线与任务统计;下载按进行中、已停止、已完成、全部分类,支持搜索与按筛选批量开始、暂停。
@@ -47,6 +48,16 @@ LeiFetch 是一个 Android 下载接管模块。它通过 LSPosed Hook 捕获应
 5. 可选:在设置中选择 SAF 保存目录。默认保存在应用内部,卸载时会一并删除。
 
 ColorOS 需允许 LeiFetch 后台运行:Firefox 进程内读取接管配置依赖 LeiFetch 的偏好提供者,进程被深度冻结或强停时配置读取失败,接管自动退回 Firefox 自身下载。
+
+## Via 浏览器对接
+
+Via 的「第三方下载器」采用作者维护的内置白名单:选中后 Via 以 ACTION_SEND + text/plain 显式调起白名单应用的下载组件,只传下载地址、不带 UA / Cookie / 文件名,名单无法由下载器一侧自行加入(参见 [gopeed#412](https://github.com/GopeedLab/gopeed/issues/412) 中 Via 作者的说明)。LeiFetch 已按该契约实现接收入口(`DownloaderActivity`,导出组件,读取 `EXTRA_TEXT` 入库并立即开始下载):
+
+- **现在可用**:在 Via 或任意应用中把链接「分享」到 LeiFetch(系统分享菜单即可识别文本链接);或复制链接后打开 LeiFetch,由剪贴板识别接手。
+- **等待 Via 适配**:要在 Via 设置里直接选择 LeiFetch,需其作者把 LeiFetch 加入白名单,可到 [tuyafeng/Via](https://github.com/tuyafeng/Via/issues) 提交申请,所需三项定义:
+  - packageName: `io.github.bileizhen.leifetch`
+  - downloadComponentName: `io.github.bileizhen.leifetch.DownloaderActivity`
+  - mainComponentName: `io.github.bileizhen.leifetch.MainActivity`
 
 ## 隐私
 
