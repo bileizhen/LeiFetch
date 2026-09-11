@@ -332,7 +332,7 @@ private fun SpeedPanel(tasks: List<Task>, history: List<Long>, config: Config, m
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             MutedText("40 秒前", 11)
-            MutedText(if (config.speedLimit == 0L) "不限速 · 实时" else "上限 ${bytes(config.speedLimit)}/s", 11)
+            MutedText(if (config.speedLimit == 0L) "不限速 · 实时" else "上限 ${speedText(config.speedLimit)}", 11)
         }
     }
 }

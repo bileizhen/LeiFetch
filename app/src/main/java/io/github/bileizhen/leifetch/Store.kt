@@ -104,7 +104,7 @@ class Settings(private val context: Context, scope: CoroutineScope) {
             p[colorMode] = next.colorMode.coerceIn(0, 5)
             p[maxTasks] = next.maxTasks.coerceIn(1, 8)
             p[connections] = next.connections.coerceIn(1, 128)
-            p[speedLimit] = next.speedLimit.coerceAtLeast(0)
+            p[speedLimit] = next.speedLimit.coerceIn(0, 1024L * 1024 * 1024)
             p[dynamic] = next.dynamic
             p[blur] = next.blur
             p[floatingBar] = next.floatingBar

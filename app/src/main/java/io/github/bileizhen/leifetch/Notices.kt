@@ -219,3 +219,14 @@ fun bytes(value: Long): String = when {
     value >= 1024 -> String.format(Locale.ROOT, "%.1f KB", value / 1024.0)
     else -> "${value.coerceAtLeast(0)} B"
 }
+
+/** 限速文案：0 为不限速；整数倍不拖小数尾巴，例如 5 MB/s 而非 5.0 MB/s。 */
+fun speedText(bytesPerSecond: Long): String = when {
+    bytesPerSecond <= 0L -> "不限速"
+    bytesPerSecond >= 1024L * 1024 -> compact(bytesPerSecond / (1024.0 * 1024)) + " MB/s"
+    else -> compact(bytesPerSecond / 1024.0) + " KB/s"
+}
+
+private fun compact(value: Double): String =
+    if (value == value.toLong().toDouble()) value.toLong().toString()
+    else String.format(Locale.ROOT, "%.2f", value).trimEnd('0').trimEnd('.')

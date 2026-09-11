@@ -38,6 +38,7 @@ import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
@@ -62,6 +63,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
@@ -105,7 +107,9 @@ import top.yukonga.miuix.kmp.preference.*
 import top.yukonga.miuix.kmp.theme.*
 import java.text.DateFormat
 import java.util.Date
+import java.util.Locale
 import kotlin.math.roundToInt
+import kotlin.math.roundToLong
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val app = application as LeiFetchApp
@@ -799,6 +803,57 @@ private fun SettingsIcon(icon: ImageVector) {
     Icon(icon, contentDescription = null, modifier = Modifier.padding(end = 6.dp), tint = MiuixTheme.colorScheme.onBackground)
 }
 
+/** 自定义速度上限：输入数值 + 单位；留空或 0 即不限速。 */
+@Composable
+private fun SpeedLimitDialog(show: Boolean, current: Long, onDismiss: () -> Unit, onConfirm: (Long) -> Unit) {
+    if (!show) return
+    // 不足 1 MB/s 的限速按 KB/s 预填，免得出现 0.5 这种小数。
+    val kbUnit = current in 1 until 1048576L
+    var unit by remember { mutableIntStateOf(if (kbUnit) 0 else 1) }
+    var input by remember {
+        mutableStateOf(
+            when {
+                current <= 0L -> ""
+                kbUnit -> (current / 1024.0).roundToLong().toString()
+                else -> compactInput(current / (1024.0 * 1024))
+            }
+        )
+    }
+    val parsed = input.trim().replace(',', '.').toDoubleOrNull()
+    val bytes = parsed?.let { (it * if (unit == 0) 1024.0 else 1048576.0).roundToLong() } ?: 0L
+    // 留空或 0 即不限速；上限 1 GB/s 兜住误输入。
+    val valid = input.isBlank() || (parsed != null && bytes in 0..1073741824L)
+    SuperDialog(show = true, title = "全局速度上限", summary = "留空或 0 表示不限速，最大 1 GB/s",
+        onDismissRequest = onDismiss) {
+        TextField(
+            value = input,
+            onValueChange = { next -> if (next.length <= 9 && next.all { it.isDigit() || it == '.' || it == ',' }) input = next },
+            label = if (unit == 0) "速度上限（KB/s）" else "速度上限（MB/s）",
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+        )
+        Row(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            SpeedUnitChip("KB/s", unit == 0, Modifier.weight(1f)) { unit = 0 }
+            SpeedUnitChip("MB/s", unit == 1, Modifier.weight(1f)) { unit = 1 }
+        }
+        Row(Modifier.padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            TextButton("取消", onClick = onDismiss, modifier = Modifier.weight(1f))
+            TextButton("确定", enabled = valid, onClick = { onConfirm(bytes) }, modifier = Modifier.weight(1f))
+        }
+    }
+}
+
+@Composable
+private fun SpeedUnitChip(text: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    TextButton(text = text, onClick = onClick, modifier = modifier,
+        colors = if (selected) ButtonDefaults.textButtonColorsPrimary() else ButtonDefaults.textButtonColors())
+}
+
+/** 预填输入框用：整数不带小数尾巴。 */
+private fun compactInput(value: Double): String =
+    if (value == value.toLong().toDouble()) value.toLong().toString()
+    else String.format(Locale.ROOT, "%.2f", value).trimEnd('0').trimEnd('.')
+
 private fun LazyListScope.settingsItems(config: Config, vm: MainViewModel, onOpenAppearance: () -> Unit,
                                         onOpenAbout: () -> Unit, onOpenMirrors: () -> Unit, pickTree: () -> Unit) {
     item { SmallTitle("NSFX 下载内核", insideMargin = sectionTitleMargin) }
@@ -837,10 +892,20 @@ private fun LazyListScope.settingsItems(config: Config, vm: MainViewModel, onOpe
                 items = listOf(4, 8, 16, 32, 64).map { DropdownItem("$it 个连接") },
                 selectedIndex = listOf(4, 8, 16, 32, 64).indexOf(config.connections).coerceAtLeast(0),
                 onSelectedIndexChange = { index -> vm.edit { it.copy(connections = listOf(4, 8, 16, 32, 64)[index]) } })
+            // 只有「不限速」和「自定义…」两项：数值走对话框，生效中的上限放副标题。
+            var showSpeedDialog by rememberSaveable { mutableStateOf(false) }
+            val customSpeed = config.speedLimit.takeIf { it > 0L }
             OverlaySpinnerPreference(title = "全局速度上限", startAction = { SettingsIcon(Icons.Filled.Update) },
-                items = listOf("不限速", "1 MB/s", "5 MB/s", "10 MB/s").map { DropdownItem(it) },
-                selectedIndex = listOf(0L, 1048576L, 5242880L, 10485760L).indexOf(config.speedLimit).coerceAtLeast(0),
-                onSelectedIndexChange = { index -> vm.edit { it.copy(speedLimit = listOf(0L, 1048576L, 5242880L, 10485760L)[index]) } })
+                summary = if (customSpeed != null) "当前 ${speedText(customSpeed)}" else "不限制总下载速度",
+                items = listOf("不限速", "自定义…").map { DropdownItem(it) },
+                selectedIndex = if (customSpeed != null) 1 else 0,
+                showValue = false,
+                onSelectedIndexChange = { index ->
+                    if (index == 0) vm.edit { it.copy(speedLimit = 0L) } else showSpeedDialog = true
+                })
+            SpeedLimitDialog(show = showSpeedDialog, current = config.speedLimit,
+                onDismiss = { showSpeedDialog = false },
+                onConfirm = { value -> vm.edit { it.copy(speedLimit = value) }; showSpeedDialog = false })
             // 数值参数在前、行为开关收尾：同类项相邻，扫一眼就知道这组在调什么。
             SwitchPreference(title = "NSFX 动态拆分", summary = "空闲线程接手缓慢尾段",
                 startAction = { SettingsIcon(Icons.Rounded.RocketLaunch) },
