@@ -89,6 +89,7 @@ import io.github.bileizhen.leifetch.ui.NewDownloadTopSheet
 import io.github.bileizhen.leifetch.ui.PlainFloatingBar
 import io.github.bileizhen.leifetch.ui.SuperSwitch
 import io.github.bileizhen.leifetch.ui.topPullToNewDownload
+import io.github.bileizhen.leifetch.ui.component.ElasticSlider
 import io.github.bileizhen.leifetch.ui.component.FloatingBottomBar
 import io.github.bileizhen.leifetch.ui.component.FloatingBottomBarItem
 import io.github.bileizhen.leifetch.ui.theme.LocalDarkTheme
@@ -803,10 +804,31 @@ private fun LazyListScope.settingsItems(config: Config, vm: MainViewModel, onOpe
     item { SmallTitle("NSFX 下载内核", insideMargin = sectionTitleMargin) }
     item {
         Card {
-            OverlaySpinnerPreference(title = "下载线程数", summary = "单任务并行连接数；不支持分段时自动单连接",
+            // 拖动过程只改本地状态，抬手才落盘。
+            var threads by remember(config.threads) { mutableFloatStateOf(config.threads.toFloat()) }
+            BasicComponent(
+                title = "下载线程数", summary = "单任务并行连接数；不支持分段时自动单连接",
                 startAction = { SettingsIcon(Icons.Rounded.Download) },
-                items = (1..16).map { DropdownItem("$it 线程") }, selectedIndex = config.threads - 1,
-                onSelectedIndexChange = { index -> vm.edit { it.copy(threads = index + 1) } })
+                endActions = {
+                    Text(
+                        "${threads.roundToInt()} 线程",
+                        fontSize = MiuixTheme.textStyles.body2.fontSize,
+                        color = MiuixTheme.colorScheme.onSurfaceVariantActions
+                    )
+                },
+                bottomAction = {
+                    ElasticSlider(
+                        value = threads,
+                        onValueChange = { threads = it },
+                        valueRange = 1f..16f, step = 1f,
+                        contentDescription = "下载线程数",
+                        onValueChangeFinished = { v -> vm.edit { it.copy(threads = v.roundToInt()) } },
+                    )
+                })
+        }
+    }
+    item {
+        Card {
             OverlaySpinnerPreference(title = "同时下载任务数", summary = "内核参数在下载服务下次启动时生效",
                 startAction = { SettingsIcon(Icons.Rounded.CallToAction) },
                 items = (1..8).map { DropdownItem("$it 个任务") }, selectedIndex = config.maxTasks - 1,

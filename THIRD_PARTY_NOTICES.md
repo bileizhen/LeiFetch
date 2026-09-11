@@ -26,3 +26,12 @@ Miuix、AndroidX、Kotlin Coroutines、Gradle Wrapper 的原始版权及许可�
 ## LSPosed 作用域服务（2026-09-10）
 
 `XposedService.kt` 移植自 [XBlocker](https://github.com/bileizhen/XBlocker)（同一作者，授权移植）的 `data/XposedServiceProvider.kt`：经 `<包名>.XposedService` 提供者接收 LSPosed 推送的 libxposed 服务 binder，并以手写 binder Parcel 调用 `io.github.libxposed.service.IXposedService` 查询 / 申请模块作用域（避开中文路径下 AGP 的 AIDL 解析问题）。GPL-3.0，与本项目许可证一致。
+
+## 弹性滑块（2026-09-11）
+
+`ui/component/ElasticSlider.kt` 的交互按 [vue-bits ElasticSlider](https://vue-bits.dev/components/elastic-slider) 重写。
+
+- 项目：https://github.com/DavidHDev/vue-bits
+- 参考文件：`src/content/Components/ElasticSlider/ElasticSlider.vue`
+- 许可证：MIT。
+- 本次修改：只借鉴交互行为（越界拉伸与 sigmoid 衰减、弹簧回弹、± 图标让位与弹跳、按下加粗），未复制其源码；Kotlin / Jetpack Compose 实现为本项目原创。数值不浮在轨道上方，改由调用方放在标题行右端。轨道两侧的 ± 图标改为 Canvas 直接绘制，未引入 `material-icons-extended` 中的 `Add` / `Remove` 资源。
