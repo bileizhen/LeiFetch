@@ -597,7 +597,21 @@ private val teamMembers = listOf(
             "· 双入口：legacy Xposed 93 与 libxposed API 101，作用域自动申请；数据只存本机，无遥测",
         ).joinToString("\n"),
     ),
-    TeamMember("2468872022", "LinYe_2804", "开发"),
+    TeamMember(
+        qq = "2468872022",
+        name = "LinYe_2804",
+        role = "开发",
+        detail = listOf(
+            "对 LeiFetch 现用的 NSFX 下载内核做了大量优化与修改：把 NeoNSF 的功能迁移进来，为内核新增了这些特性。",
+            "",
+            "· 断点续传：合法的 Last-Modified 也参与安全分段与续传，仍优先强 ETag，兼容旧版仅存 ETag 的断点日志",
+            "· 大小捕获：捕获 Firefox、WebView、OkHttp、HttpURLConnection 提供的文件大小，重复捕获任务时用后续结果补全已有任务",
+            "· 小文件直连：已知小于 8 MiB 的文件直接单连接下载，省去一次 Range: bytes=0-0 探测；大小提示失效时自动清理临时数据并回退完整探测流程",
+            "· 连接复用：完整读取响应后保留 HTTP 连接复用，异常、中断或未读完时仍主动断开，大幅提升下载连接稳定性",
+            "",
+            "全部改动只作功能性拓展与性能、体验优化，原有的动态尾部分片、全局连接预算、限速、重定向安全与原子检查点机制均保留。",
+        ).joinToString("\n"),
+    ),
     TeamMember("2183396164", "加藤糊", "图标绘制"),
     TeamMember("442259851", "KelierAndes", "图标绘制"),
     TeamMember(
