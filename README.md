@@ -107,8 +107,6 @@ Firefox 插件观察 GeckoView 外部响应后独立探测公开 HTTP(S) 文件�
 
 Via 的「第三方下载器」采用作者维护的内置白名单：选中后 Via 以 ACTION_SEND + text/plain 显式调起白名单应用的下载组件，只传下载地址、不带 UA / Cookie / 文件名，名单无法由下载器一侧自行加入（参见 [gopeed#412](https://github.com/GopeedLab/gopeed/issues/412) 中 Via 作者的说明）。LeiFetch 已按该契约实现接收入口（`DownloaderActivity`，导出组件，读取 `EXTRA_TEXT` 入库并立即开始下载），因此现在可以在 Via 或任意应用中把链接「分享」到 LeiFetch，或复制链接后打开 LeiFetch 由剪贴板识别接手。
 
-要在 Via 设置里直接选择 LeiFetch，需其作者把 LeiFetch 加入白名单，可到 [tuyafeng/Via](https://github.com/tuyafeng/Via/issues) 提交申请，所需三项定义为 `io.github.bileizhen.leifetch`、`io.github.bileizhen.leifetch.DownloaderActivity` 和 `io.github.bileizhen.leifetch.MainActivity`。
-
 ### 系统下载器插件勾了却没有反应？
 
 该插件需要在 LSPosed 中同时勾选 `com.android.providers.downloads` 与 `com.android.providers.downloads.ui`，授权后重启设备才生效。只勾前者时能捕获入队，但系统下载列表和通知入口不会被重定向；只勾后者则没有捕获来源。
