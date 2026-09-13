@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src=".github/img/icon-512.png" width="96" alt="LeiFetch">
+<img src=".github/img/icon-256.png" width="96" alt="LeiFetch">
 
 # [LeiFetch](https://github.com/bileizhen/LeiFetch)
 

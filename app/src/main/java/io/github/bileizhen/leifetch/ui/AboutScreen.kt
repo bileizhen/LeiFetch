@@ -599,6 +599,7 @@ private val teamMembers = listOf(
     ),
     TeamMember("2468872022", "LinYe_2804", "开发"),
     TeamMember("2183396164", "加藤糊", "图标绘制"),
+    TeamMember("442259851", "KelierAndes", "图标绘制"),
     TeamMember(
         qq = "2536843865",
         name = "Hutao_felicity",
@@ -609,7 +610,6 @@ private val teamMembers = listOf(
 
 private val betaTesters = listOf(
     TeamMember("617498164", "ShiraM1zu", "内测用户"),
-    TeamMember("442259851", "KelierAndes", "内测用户"),
     TeamMember("3022513812", "DiceSKY", "内测用户"),
     TeamMember("165658800", "Matsuri", "内测用户"),
     TeamMember("1945826346", "Rcst20", "内测用户"),

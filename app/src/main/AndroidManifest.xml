@@ -9,9 +9,12 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- 桌面图标用 mipmap 里的自适应图标组（tools/make_app_icon.py 生成）；
+         drawable/ic_download 保持单色矢量，只给通知栏和关于页当字形用。 -->
     <application android:name=".LeiFetchApp" android:label="LeiFetch"
         android:forceQueryable="true"
-        android:icon="@drawable/ic_download" android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round"
+        android:allowBackup="false"
         android:supportsRtl="true" android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>

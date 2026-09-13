@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 自适应图标：前景是完整铺满 108dp 画布的位图（圆角已向外补全，见 tools/make_app_icon.py），
+     背景只在极端遮罩下露边时可见，取的是原图边缘同一族的浅蓝渐变。 -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@drawable/ic_launcher_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+    <monochrome android:drawable="@drawable/ic_launcher_monochrome" />
+</adaptive-icon>
