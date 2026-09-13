@@ -134,13 +134,15 @@ data class Task(
     val created: Long = System.currentTimeMillis(), val finished: Long = 0,
     val uri: String = "", val error: String = "", val tree: String = "",
     /** 下载时所用的 GitHub 镜像站主机；空表示未走镜像（直连、非 GitHub 或未启用）。 */
-    val mirror: String = ""
+    val mirror: String = "",
+    /** 捕获来源已观察到的响应长度；仅作为免探测提示，内核仍会校验。 */
+    val expectedSize: Long = -1
 ) {
     fun json(): JSONObject = JSONObject().put("id", id).put("url", url).put("name", name)
         .put("headers", JSONObject(headers)).put("source", source).put("state", state)
         .put("done", done).put("total", total).put("speed", speed).put("created", created)
         .put("finished", finished).put("uri", uri).put("error", error).put("tree", tree)
-        .put("mirror", mirror)
+        .put("mirror", mirror).put("expectedSize", expectedSize)
 
     companion object {
         fun from(j: JSONObject): Task {
@@ -150,7 +152,7 @@ data class Task(
                 j.getString("state"), j.optLong("done"), j.optLong("total", -1),
                 j.optLong("speed"), j.getLong("created"), j.optLong("finished"),
                 j.optString("uri"), j.optString("error"), j.optString("tree"),
-                j.optString("mirror"))
+                j.optString("mirror"), j.optLong("expectedSize", -1))
         }
     }
 }
@@ -185,7 +187,13 @@ class TaskStore(context: Context) : SQLiteOpenHelper(context, "tasks.db", null, 
             it.url == task.url && it.headers == task.headers &&
                 it.state !in setOf("已完成", "已取消") && task.created - it.created < 60_000
         }
-        if (duplicate != null) return duplicate
+        if (duplicate != null) {
+            // 后到的响应观测可能比先到的 DownloadManager 事件多带一个长度提示。
+            if (duplicate.expectedSize < 0 && task.expectedSize >= 0) {
+                return duplicate.copy(expectedSize = task.expectedSize).also(::put)
+            }
+            return duplicate
+        }
         require(tasks.value.count { it.state == "待确认" } < 200) { "待确认任务已达上限" }
         put(task)
         return task

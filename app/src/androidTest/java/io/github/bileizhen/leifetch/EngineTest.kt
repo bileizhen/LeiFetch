@@ -55,6 +55,44 @@ class EngineTest {
             } finally { workDir(context, task.id).deleteRecursively() }
         }
     }
+    @Test fun knownSmallFileSkipsProbe() = runBlocking {
+        val seen = CopyOnWriteArrayList<String>()
+        server(payload, seen = seen).use { s ->
+            val task = Task(url = s.url("/small.bin").toString(), name = "small.bin",
+                expectedSize = payload.size.toLong())
+            try {
+                assertArrayEquals(payload, NsfxDownloadEngine(context, NsfxConfig(threads = 8))
+                    .download(task, { _, _, _ -> }).readBytes())
+                assertEquals(listOf(""), seen.toList())
+            } finally { workDir(context, task.id).deleteRecursively() }
+        }
+    }
+    @Test fun lastModifiedEnablesSafeSegmentedDownloadWithoutEtag() = runBlocking {
+        val modified = "Mon, 23 Apr 2018 08:32:25 GMT"
+        val validators = CopyOnWriteArrayList<String>()
+        val s = MockWebServer()
+        s.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                validators += request.getHeader("If-Range").orEmpty()
+                val m = Regex("bytes=(\\d+)-(\\d+)").matchEntire(request.getHeader("Range")!!)!!
+                val start = m.groupValues[1].toInt()
+                val end = m.groupValues[2].toInt()
+                return MockResponse().setResponseCode(206)
+                    .setHeader("Last-Modified", modified)
+                    .setHeader("Content-Range", "bytes $start-$end/${payload.size}")
+                    .setBody(Buffer().write(payload, start, end - start + 1))
+            }
+        }
+        s.start()
+        s.use {
+            val task = Task(url = s.url("/modified.bin").toString(), name = "modified.bin")
+            try {
+                assertArrayEquals(payload, NsfxDownloadEngine(context,
+                    NsfxConfig(threads = 1, mode = "threads_only")).download(task, { _, _, _ -> }).readBytes())
+                assertEquals(listOf("", modified), validators.toList())
+            } finally { workDir(context, task.id).deleteRecursively() }
+        }
+    }
     @Test fun cancellationThenResumeUsesNonzeroRangeOffset() = runBlocking {
         val seen = CopyOnWriteArrayList<String>()
         server(payload, slow = true, seen = seen).use { s ->

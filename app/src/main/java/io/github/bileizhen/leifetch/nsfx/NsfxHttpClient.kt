@@ -7,23 +7,33 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Semaphore
 import java.io.Closeable
 import java.io.IOException
+import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.atomic.AtomicBoolean
 
 class HttpFailure(val status: Int) : IOException("HTTP $status")
 class RangeFailure(message: String) : IOException(message)
+class SizeMismatch(message: String) : IOException(message)
 
 class NsfxHttpClient(private val config: NsfxConfig) {
     private val connections = Semaphore(config.globalMaxConnections.coerceIn(1, 128))
-    class Response(val connection: HttpURLConnection, private val release: () -> Unit) : Closeable {
+    class Response(val connection: HttpURLConnection, private val release: (Boolean) -> Unit) : Closeable {
         private val closed = AtomicBoolean(false)
+        private var body: InputStream? = null
+        private var reusable = false
         val code get() = connection.responseCode
         val url get() = connection.url.toExternalForm()
         val length get() = header("Content-Length")?.toLongOrNull() ?: -1L
         fun header(name: String): String? = connection.getHeaderField(name)
-        val stream get() = connection.inputStream
-        override fun close() { if (closed.compareAndSet(false, true)) release() }
+        val stream: InputStream get() = body ?: connection.inputStream.also { body = it }
+        /** 仅在已读到 EOF 后调用，此时 HttpURLConnection 才可安全复用连接。 */
+        fun markConsumed() { reusable = true }
+        override fun close() {
+            if (!closed.compareAndSet(false, true)) return
+            runCatching { body?.close() }
+            release(reusable)
+        }
     }
     @OptIn(InternalCoroutinesApi::class)
     suspend fun get(task: Task, range: String? = null, validator: String? = null): Response {
@@ -59,7 +69,11 @@ class NsfxHttpClient(private val config: NsfxConfig) {
                 } else {
                     val handle = cancellation
                     handedOff = true
-                    return Response(c) { handle?.dispose(); c.disconnect(); connections.release() }
+                    return Response(c) { reusable ->
+                        handle.dispose()
+                        if (!reusable) c.disconnect()
+                        connections.release()
+                    }
                 }
             } finally {
                 if (!handedOff) { cancellation?.dispose(); connection?.disconnect(); connections.release() }

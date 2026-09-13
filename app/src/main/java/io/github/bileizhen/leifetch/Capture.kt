@@ -51,7 +51,8 @@ class CaptureProvider : ContentProvider() {
         try {
             runBlockingReady(c)
             val task = c.app.store.add(Task(url = url, name = safeName(j.getString("name")),
-                headers = headers, source = "$caller · ${j.optString("entry")}", tree = c.app.settings.state.value.tree))
+                headers = headers, source = "$caller · ${j.optString("entry")}", tree = c.app.settings.state.value.tree,
+                expectedSize = j.optLong("expectedSize", -1).takeIf { it >= 0 } ?: -1))
             Notices.refreshCandidate(c)
             return Bundle().apply { putBoolean("accepted", true); putString("id", task.id) }
         } finally { Binder.restoreCallingIdentity(identity) }
@@ -238,7 +239,7 @@ class HookEntry : IXposedHookLoadPackage {
                             CookieManager.getInstance().getCookie(url)?.let { h["Cookie"] = it }
                             web.url?.let { h["Referer"] = it }
                             val accepted = queue {
-                                if (!capture(url, h, URLUtil.guessFileName(url, disposition, mime), "WebView 接管")) {
+                                if (!capture(url, h, URLUtil.guessFileName(url, disposition, mime), "WebView 接管", length)) {
                                     web.post { original.onDownloadStart(url, agent, disposition, mime, length) }
                                 }
                             }
@@ -286,7 +287,9 @@ class HookEntry : IXposedHookLoadPackage {
                             val disposition = conn.getHeaderField("Content-Disposition")
                             if (!looksLikeDownload(url, disposition)) return
                             @Suppress("UNCHECKED_CAST") val h = param.getObjectExtra("leifetch.headers") as? Map<String, String> ?: emptyMap()
-                            submit(url, h, URLUtil.guessFileName(url, disposition, conn.contentType), "HttpURLConnection（原请求保留）")
+                            submit(url, h, URLUtil.guessFileName(url, disposition, conn.contentType),
+                                "HttpURLConnection（原请求保留）",
+                                if (conn.responseCode == 200) conn.getHeaderField("Content-Length")?.toLongOrNull() ?: -1 else -1)
                         }
                     }.onFailure { log("网络响应识别", it) }
                 }
@@ -303,6 +306,9 @@ class HookEntry : IXposedHookLoadPackage {
             if (code !in 200..299) return
             val url = XposedHelpers.callMethod(request, "url").toString()
             val disposition = XposedHelpers.callMethod(response, "header", "Content-Disposition") as? String
+            val contentLength = if (code == 200)
+                (XposedHelpers.callMethod(response, "header", "Content-Length") as? String)?.toLongOrNull() ?: -1
+            else -1
             if (!looksLikeDownload(url, disposition)) return
             val headers = XposedHelpers.callMethod(request, "headers")
             val size = XposedHelpers.callMethod(headers, "size") as Int
@@ -310,7 +316,7 @@ class HookEntry : IXposedHookLoadPackage {
                 XposedHelpers.callMethod(headers, "name", it) as String to
                     XposedHelpers.callMethod(headers, "value", it) as String
             }
-            submit(url, h, URLUtil.guessFileName(url, disposition, null), "OkHttp（原请求保留）")
+            submit(url, h, URLUtil.guessFileName(url, disposition, null), "OkHttp（原请求保留）", contentLength)
         }.onFailure { log("OkHttp", it) }
     }
 
@@ -345,7 +351,7 @@ class HookEntry : IXposedHookLoadPackage {
                                     }) ?: return@runCatching false
                                     val name = URLUtil.guessFileName(url, FirefoxProbe.header(headers, "Content-Disposition"),
                                         FirefoxProbe.header(headers, "Content-Type"))
-                                    val ok = capture(verified.url, emptyMap(), name, "Firefox 插件接管")
+                                    val ok = capture(verified.url, emptyMap(), name, "Firefox 插件接管", verified.totalLength)
                                     XposedBridge.log(if (ok) "LeiFetch Firefox：已接管下载" else "LeiFetch Firefox：任务入库失败，保留 Firefox 下载")
                                     ok
                                 } finally { probing.set(false) }
@@ -361,14 +367,17 @@ class HookEntry : IXposedHookLoadPackage {
         })
         XposedBridge.log("LeiFetch Firefox：onExternalResponse 钩子已安装")
     }
-    private fun submit(url: String, headers: Map<String, String>, name: String?, entry: String) {
-        queue { capture(url, headers, name ?: URLUtil.guessFileName(url, null, null), entry) }
+    private fun submit(url: String, headers: Map<String, String>, name: String?, entry: String,
+                       expectedSize: Long = -1) {
+        queue { capture(url, headers, name ?: URLUtil.guessFileName(url, null, null), entry, expectedSize) }
     }
-    private fun capture(url: String, headers: Map<String, String>, name: String, entry: String): Boolean {
+    private fun capture(url: String, headers: Map<String, String>, name: String, entry: String,
+                        expectedSize: Long = -1): Boolean {
         if (!enabled) return false
         return runCatching {
             val j = JSONObject().put("url", url).put("name", name).put("entry", entry)
                 .put("headers", JSONObject(headers.filterKeys { it.lowercase() in observeHeaders }))
+                .apply { if (expectedSize >= 0) put("expectedSize", expectedSize) }
             if (j.toString().length > 32768) return false
             context?.contentResolver?.call(Uri.parse("content://$PKG.capture"), "capture", null,
                 Bundle().apply { putString("request", j.toString()) })?.getBoolean("accepted") == true
