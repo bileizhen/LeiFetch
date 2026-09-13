@@ -12,8 +12,8 @@ android {
         applicationId = "io.github.bileizhen.leifetch"
         minSdk = 23
         targetSdk = 36
-        versionCode = 3
-        versionName = "0.1.0-beta.2"
+        versionCode = 4
+        versionName = "1.0.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     val keystoreFile = rootProject.file("leifetch-release.jks")
