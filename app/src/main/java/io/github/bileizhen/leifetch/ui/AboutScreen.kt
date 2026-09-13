@@ -600,7 +600,7 @@ private val teamMembers = listOf(
     TeamMember(
         qq = "2468872022",
         name = "LinYe_2804",
-        role = "开发",
+        role = "开发 · 图标绘制",
         detail = listOf(
             "对 LeiFetch 现用的 NSFX 下载内核做了大量优化与修改：把 NeoNSF 的功能迁移进来，为内核新增了这些特性。",
             "",
@@ -612,8 +612,6 @@ private val teamMembers = listOf(
             "全部改动只作功能性拓展与性能、体验优化，原有的动态尾部分片、全局连接预算、限速、重定向安全与原子检查点机制均保留。",
         ).joinToString("\n"),
     ),
-    TeamMember("2183396164", "加藤糊", "图标绘制"),
-    TeamMember("442259851", "KelierAndes", "图标绘制"),
     TeamMember(
         qq = "2536843865",
         name = "Hutao_felicity",
@@ -624,6 +622,8 @@ private val teamMembers = listOf(
 
 private val betaTesters = listOf(
     TeamMember("617498164", "ShiraM1zu", "内测用户"),
+    TeamMember("2183396164", "加藤糊", "内测用户"),
+    TeamMember("442259851", "KelierAndes", "内测用户"),
     TeamMember("3022513812", "DiceSKY", "内测用户"),
     TeamMember("165658800", "Matsuri", "内测用户"),
     TeamMember("1945826346", "Rcst20", "内测用户"),

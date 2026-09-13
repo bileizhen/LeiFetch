@@ -1,12 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 自适应图标背景层：取原图圆角方块边缘的同一族浅蓝渐变（顶 #F8FAFE → 底 #C3D7FC）。
-     前景已铺满整块画布，这层只在遮罩比原图圆角更小、露出边角时可见。 -->
+<!-- 自适应图标背景层：与源图瓷砖同色的纯浅蓝。前景只在安全区放字样，
+     透明处露出这层，任何遮罩下都是同一块底色。 -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="rectangle">
-    <gradient
-        android:angle="270"
-        android:startColor="#F8FAFE"
-        android:centerColor="#E7F1FD"
-        android:endColor="#C3D7FC"
-        android:type="linear" />
+    <solid android:color="#E2EDFB" />
 </shape>
