@@ -14,15 +14,23 @@ class Segment(val index: Int, val start: Long, @Volatile var end: Long, @Volatil
     val remaining get() = (size - downloaded).coerceAtLeast(0)
 }
 
-data class FileInfo(val url: String, val size: Long, val etag: String, val supportsRange: Boolean)
+data class FileInfo(
+    val url: String, val size: Long, val etag: String, val lastModified: String,
+    val supportsRange: Boolean
+) {
+    /** RFC 9110: 优先使用强 ETag，缺失时才用 HTTP 日期作 If-Range 校验器。 */
+    val validator: String get() = etag.ifEmpty { lastModified }
+}
 
 class NsfxStorage(val dir: File) {
     val partial = File(dir, "data.nsfx_partial")
     private val journal = AtomicFile(File(dir, "segments.json"))
     fun load(info: FileInfo): MutableList<Segment>? = runCatching {
         val j = JSONObject(String(journal.readFully()))
-        require(info.etag.isNotEmpty() && info.supportsRange)
-        require(j.getString("url") == info.url && j.getString("etag") == info.etag && j.getLong("size") == info.size)
+        require(info.validator.isNotEmpty() && info.supportsRange)
+        // 兼容旧版只保存 ETag 的断点日志。
+        val savedValidator = j.optString("validator").ifEmpty { j.optString("etag") }
+        require(j.getString("url") == info.url && savedValidator == info.validator && j.getLong("size") == info.size)
         require(partial.exists() && partial.length() == info.size)
         val a = j.getJSONArray("segments")
         require(a.length() in 1..256)
@@ -36,12 +44,15 @@ class NsfxStorage(val dir: File) {
         verifyCoverage(list, info.size)
         list
     }.getOrNull()
+    fun hasState(): Boolean = dir.listFiles()?.isNotEmpty() == true
     fun reset() { dir.listFiles()?.forEach { require(it.delete()) { "无法清理断点文件" } } }
     fun save(info: FileInfo, segments: List<Segment>) {
         verifyCoverage(segments, info.size)
         val a = JSONArray()
         for (segment in segments) a.put(JSONObject().put("id", segment.index).put("start", segment.start).put("end", segment.end))
-        atomic(journal, JSONObject().put("url", info.url).put("etag", info.etag).put("size", info.size).put("segments", a).toString())
+        atomic(journal, JSONObject().put("url", info.url).put("etag", info.etag)
+            .put("lastModified", info.lastModified).put("validator", info.validator)
+            .put("size", info.size).put("segments", a).toString())
     }
     fun checkpoint(segment: Segment) = atomic(marker(segment.index), segment.downloaded.toString())
     private fun marker(id: Int) = AtomicFile(File(dir, "$id.offset"))

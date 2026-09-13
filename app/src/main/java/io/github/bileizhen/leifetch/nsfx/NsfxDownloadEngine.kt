@@ -14,6 +14,8 @@ import java.io.File
 import java.io.IOException
 import java.io.RandomAccessFile
 import java.net.URL
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
 import javax.net.ssl.SSLHandshakeException
 import java.util.concurrent.atomic.AtomicLong
 
@@ -28,9 +30,19 @@ class NsfxDownloadEngine(private val context: Context, private val config: NsfxC
 
     suspend fun download(task: Task, progress: (Long, Long, Long) -> Unit,
                          telemetry: (EngineTelemetry) -> Unit = {}): File = withContext(Dispatchers.IO) {
-        val info = probe(task)
         val storage = NsfxStorage(workDir(context, task.id))
-        if (!info.supportsRange || info.size <= 0 || info.etag.isEmpty()) {
+        // 此处修改参照于neonsf，短长度文件直接单连接下载，避免多余的Range探测操作。
+        if (task.expectedSize in 1 until SMALL_FILE_DIRECT_LIMIT && !storage.hasState()) {
+            try {
+                return@withContext single(task,
+                    FileInfo(task.url, task.expectedSize, "", "", false), storage, progress, telemetry)
+            } catch (_: SizeMismatch) {
+                // 来源提示已过期：重置不完整数据，回到权威探测路径作为fallback。
+                storage.reset()
+            }
+        }
+        val info = probe(task)
+        if (!info.supportsRange || info.size <= 0 || info.validator.isEmpty()) {
             storage.reset()
             return@withContext single(task, info, storage, progress, telemetry)
         }
@@ -82,8 +94,14 @@ class NsfxDownloadEngine(private val context: Context, private val config: NsfxC
                         416 -> if (r.header("Content-Range") == "bytes */0") 0 else throw HttpFailure(416)
                         else -> throw HttpFailure(r.code)
                     }
-                    val tag = r.header("ETag").orEmpty().trim().takeIf { it.startsWith('"') && it.endsWith('"') }.orEmpty()
-                    FileInfo(task.url, size, tag, r.code == 206)
+                    val tag = strongEtag(r.header("ETag"))
+                    val modified = validLastModified(r.header("Last-Modified"))
+                    if (r.code == 206) {
+                        // 合法 0-0 响应应只有 1 字节；读到 EOF 后连接可进入连接池。
+                        val input = r.stream
+                        if (input.read() >= 0 && input.read() == -1) r.markConsumed()
+                    }
+                    FileInfo(task.url, size, tag, modified, r.code == 206)
                 }
                 if (info != null) return info
             } catch (e: IOException) {
@@ -160,12 +178,13 @@ class NsfxDownloadEngine(private val context: Context, private val config: NsfxC
             try {
                 val start = segment.start + segment.downloaded
                 val end = segment.end - 1
-                http.get(task, "bytes=$start-$end", info.etag).use { response ->
+                http.get(task, "bytes=$start-$end", info.validator).use { response ->
                     // 签名 CDN(如腾讯 cdntips)每次请求都 302 到不同的边缘 URL,
-                    // 身份只认 ETag 与总长,请求已带 If-Range 兜底;200 即校验失败。
+                    // 身份只认校验器与总长,请求已带 If-Range 兜底;200 即校验失败。
                     if (response.code == 200) throw RangeFailure("RANGE_RESPONSE_INVALID：资源已变化")
                     if (response.code != 206) throw HttpFailure(response.code)
-                    if (parseRange(response.header("Content-Range"), start, end) != info.size || response.header("ETag") != info.etag) {
+                    if (parseRange(response.header("Content-Range"), start, end) != info.size ||
+                        !validatorMatches(info, response.header("ETag"), response.header("Last-Modified"))) {
                         throw RangeFailure("RANGE_RESPONSE_INVALID：资源已变化")
                     }
                     requireIdentity(response)
@@ -187,6 +206,7 @@ class NsfxDownloadEngine(private val context: Context, private val config: NsfxC
                                     }
                                 }
                                 if (input.read() != -1) throw RangeFailure("分片响应超出范围")
+                                response.markConsumed()
                             } finally { output.fd.sync(); storage.checkpoint(segment) }
                         }
                     }
@@ -216,10 +236,12 @@ class NsfxDownloadEngine(private val context: Context, private val config: NsfxC
                 http.get(task).use { response ->
                     if (response.code != 200) throw HttpFailure(response.code)
                     requireIdentity(response)
+                    if (info.size >= 0 && response.length >= 0 && response.length != info.size)
+                        throw SizeMismatch("文件大小已变化：期望 ${info.size}，实际 ${response.length}")
                     var done = 0L
                     var previous = 0L
                     var last = System.nanoTime()
-                    val total = response.length
+                    val total = info.size.takeIf { it >= 0 } ?: response.length
                     val pieceSize = maxOf(1L, total)
                     progress(0, total, 0)
                     telemetry(EngineTelemetry(1, pieceSize, ByteArray(1), 0))
@@ -243,10 +265,13 @@ class NsfxDownloadEngine(private val context: Context, private val config: NsfxC
                                     last = now; previous = done
                                 }
                             }
+                            response.markConsumed()
                             out.fd.sync()
                         }
                     }
-                    if (total >= 0 && done != total) throw IOException("incomplete transfer")
+                    if (info.size >= 0 && done != info.size)
+                        throw SizeMismatch("文件大小已变化：期望 ${info.size}，实际 $done")
+                    if (response.length >= 0 && done != response.length) throw IOException("incomplete transfer")
                     progress(done, done, 0)
                     return storage.partial
                 }
@@ -271,9 +296,24 @@ class NsfxDownloadEngine(private val context: Context, private val config: NsfxC
         val encoding = response.header("Content-Encoding")
         if (encoding != null && !encoding.equals("identity", true)) throw RangeFailure("不支持压缩的分段表示")
     }
-    private fun retryable(e: IOException): Boolean = e !is RangeFailure && e !is SSLHandshakeException &&
+    private fun retryable(e: IOException): Boolean = e !is RangeFailure && e !is SizeMismatch && e !is SSLHandshakeException &&
         !(e is HttpFailure && e.status in NsfxRetryPolicy.permanentHttp)
     companion object {
+        const val SMALL_FILE_DIRECT_LIMIT = 8L * 1024 * 1024
+
+        fun strongEtag(value: String?): String = value.orEmpty().trim()
+            .takeIf { it.length >= 2 && it.startsWith('"') && it.endsWith('"') }.orEmpty()
+
+        fun validLastModified(value: String?): String = value.orEmpty().trim().takeIf {
+            '\r' !in it && '\n' !in it && runCatching {
+                ZonedDateTime.parse(it, DateTimeFormatter.RFC_1123_DATE_TIME)
+            }.isSuccess
+        }.orEmpty()
+
+        fun validatorMatches(info: FileInfo, etag: String?, lastModified: String?): Boolean =
+            if (info.etag.isNotEmpty()) strongEtag(etag) == info.etag
+            else validLastModified(lastModified) == info.lastModified
+
         fun parseRange(value: String?, start: Long, end: Long): Long {
             val m = Regex("bytes (\\d+)-(\\d+)/(\\d+)").matchEntire(value.orEmpty()) ?: throw RangeFailure("无效 Content-Range")
             if (m.groupValues[1].toLong() != start || m.groupValues[2].toLong() != end) throw RangeFailure("Content-Range 不匹配")
