@@ -355,7 +355,7 @@ private fun AboutContent(
             ) {
                 Image(
                     modifier = Modifier
-                        .requiredSize(145.dp)
+                        .requiredSize(100.dp)
                         .then(
                             if (blurEnabled) {
                                 Modifier.textureBlur(
@@ -368,7 +368,7 @@ private fun AboutContent(
                                 )
                             } else Modifier
                         ),
-                    painter = painterResource(id = R.drawable.ic_download),
+                    painter = painterResource(id = R.drawable.ic_logo),
                     colorFilter = ColorFilter.tint(colorScheme.onBackground),
                     contentDescription = null,
                 )
