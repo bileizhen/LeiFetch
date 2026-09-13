@@ -172,6 +172,7 @@ systemProp.https.proxyPort=7890
 
 ## 参与开发
 
+- [更新日志](CHANGELOG.md)
 - [第三方依赖与许可证](THIRD_PARTY_NOTICES.md)
 - [GPL-3.0 完整协议](LICENSE)
 

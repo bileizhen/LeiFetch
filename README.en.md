@@ -174,6 +174,7 @@ Other common sync failures: an Android Studio older than what AGP 8.13.2 require
 
 ## Contributing
 
+- [Changelog](CHANGELOG.md)
 - [Third-party dependencies and licences](THIRD_PARTY_NOTICES.md)
 - [Full GPL-3.0 text](LICENSE)
 
