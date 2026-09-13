@@ -168,7 +168,7 @@ systemProp.https.proxyPort=7890
 其它常见同步失败原因：Android Studio 版本低于 AGP 8.13.2 所需版本（用较新的 Studio，JDK 直接用自带的 JBR 21 即可）；未安装 Android SDK Platform 37（在 SDK Manager 勾选，或交给 AGP 自动下载）。
 
 > [!NOTE]
-> Windows 中文路径下如遇 Java Unix-domain socket 报错，可把工程联接到 ASCII 路径后构建。正式发布请使用自己的签名密钥。
+> Windows 中文路径下如遇 Java Unix-domain socket 报错，或单元测试全部报 `ClassNotFoundException`（Gradle 把含中文的测试 classpath 以 UTF-8 写入参数文件，而 JVM 启动器按系统 ANSI 代码页读取，路径解码错乱后指向不存在的目录），可把工程联接到 ASCII 路径后构建。正式发布请使用自己的签名密钥。
 
 ## 参与开发
 

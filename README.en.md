@@ -170,7 +170,7 @@ systemProp.https.proxyPort=7890
 Other common sync failures: an Android Studio older than what AGP 8.13.2 requires (use a recent Studio; its bundled JBR 21 is fine), and a missing Android SDK Platform 37 (tick it in the SDK Manager, or let AGP download it).
 
 > [!NOTE]
-> On Windows, if a Chinese path triggers a Java Unix-domain socket error, build the project from an ASCII path. Use your own signing key for real releases.
+> On Windows, if a Chinese path triggers a Java Unix-domain socket error, or every unit test fails with `ClassNotFoundException` (Gradle writes the Chinese test classpath into an argument file as UTF-8, while the JVM launcher reads it using the system ANSI code page and ends up pointing at directories that do not exist), build the project from an ASCII path. Use your own signing key for real releases.
 
 ## Contributing
 
