@@ -13,7 +13,9 @@ data class DownloadStatistics(val active: Int = 0, val pending: Int = 0, val com
 
 class NsfxKernel(private val context: Context, config: NsfxConfig, private val onIdle: () -> Unit) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private val engine = NsfxDownloadEngine(context, config)
+    // 代理按每次请求现算：模式切换、自动探测结果与直连名单都即时生效。
+    private val engine = NsfxDownloadEngine(context, config,
+        NsfxHttpClient(config) { url -> context.app.proxies.forUrl(url) })
     private val publisher = FilePublisher(context)
     private val slots = Semaphore(config.maxConcurrentTasks.coerceIn(1, 8))
     private val jobs = mutableMapOf<String, Job>()
@@ -84,7 +86,8 @@ class NsfxKernel(private val context: Context, config: NsfxConfig, private val o
         }
         // GitHub 直链经镜像站加速：只改本次下载地址，存储的任务保持原始链接；记下所用镜像供详情页展示。
         val settings = context.app.settings.state.value
-        val route = GithubMirrors.resolve(task.url, settings.githubMirror, settings.githubMirrorPick, settings.githubMirrors)
+        val route = GithubMirrors.resolve(task.url, settings.githubMirror, settings.githubMirrorPick, settings.githubMirrors,
+            proxyFor = { url -> context.app.proxies.forUrl(url) })
         if (route.mirror.isNotEmpty()) android.util.Log.i("LeiFetch", "GitHub 镜像加速：${route.mirror}")
         if (route.mirror != task.mirror) {
             withContext(Dispatchers.IO) { context.app.store.update(id) { it.copy(mirror = route.mirror) } }

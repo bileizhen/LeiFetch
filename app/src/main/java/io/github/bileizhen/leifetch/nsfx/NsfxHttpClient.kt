@@ -9,6 +9,7 @@ import java.io.Closeable
 import java.io.IOException
 import java.io.InputStream
 import java.net.HttpURLConnection
+import java.net.Proxy
 import java.net.URL
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -16,7 +17,8 @@ class HttpFailure(val status: Int) : IOException("HTTP $status")
 class RangeFailure(message: String) : IOException(message)
 class SizeMismatch(message: String) : IOException(message)
 
-class NsfxHttpClient(private val config: NsfxConfig) {
+/** [proxyFor] 每次请求（含每一跳重定向）现算代理：直连名单按实际主机判定，设置改动立即生效。 */
+class NsfxHttpClient(private val config: NsfxConfig, private val proxyFor: (URL) -> Proxy? = { null }) {
     private val connections = Semaphore(config.globalMaxConnections.coerceIn(1, 128))
     class Response(val connection: HttpURLConnection, private val release: (Boolean) -> Unit) : Closeable {
         private val closed = AtomicBoolean(false)
@@ -46,7 +48,8 @@ class NsfxHttpClient(private val config: NsfxConfig) {
             var cancellation: DisposableHandle? = null
             var handedOff = false
             try {
-                val c = (url.openConnection() as HttpURLConnection).also { connection = it }
+                val proxy = proxyFor(url) ?: Proxy.NO_PROXY
+                val c = (url.openConnection(proxy) as HttpURLConnection).also { connection = it }
                 c.instanceFollowRedirects = false; c.useCaches = false
                 c.requestMethod = "GET"; c.connectTimeout = config.connectionTimeoutMs; c.readTimeout = config.readTimeoutMs
                 c.setRequestProperty("User-Agent", "LeiFetch-NSFX/0.1")
