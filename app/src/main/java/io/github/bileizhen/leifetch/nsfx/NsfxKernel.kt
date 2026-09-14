@@ -35,6 +35,7 @@ class NsfxKernel(private val context: Context, config: NsfxConfig, private val o
                 context.app.ready.await()
                 val initial = context.app.store.get(id) ?: return@launch
                 if (initial.state in setOf("已完成", "已取消")) return@launch
+                Logs.i(LogSource.DOWNLOAD, "加入队列：${initial.name}（${logHost(initial.url)}）")
                 withContext(Dispatchers.IO) { context.app.store.update(id) { it.copy(state = "排队中", error = "") } }
                 slots.withPermit { runTask(id) }
             } catch (e: CancellationException) {
@@ -48,6 +49,7 @@ class NsfxKernel(private val context: Context, config: NsfxConfig, private val o
                         markComplete(id, durable.first, durable.second)
                     } else {
                         val state = requested[id] ?: "已暂停"
+                        Logs.i(LogSource.DOWNLOAD, "${context.app.store.get(id)?.name.orEmpty()} $state")
                         withContext(Dispatchers.IO) {
                             context.app.store.update(id) {
                                 if (it.state == "已完成") it else it.copy(state = state, speed = 0,
@@ -59,8 +61,10 @@ class NsfxKernel(private val context: Context, config: NsfxConfig, private val o
                     }
                 }
             } catch (e: Exception) {
+                val detail = "${e.javaClass.simpleName}：${e.message?.take(140).orEmpty()}"
+                Logs.e(LogSource.DOWNLOAD, "${context.app.store.get(id)?.name.orEmpty()} 失败 · $detail")
                 withContext(Dispatchers.IO) { context.app.store.update(id) { it.copy(state = "失败", speed = 0,
-                    error = "${e.javaClass.simpleName}：${e.message?.take(140).orEmpty()}") } }
+                    error = detail) } }
             } finally {
                 jobs.remove(id); requested.remove(id)
                 if (jobs.isEmpty()) onIdle()
@@ -76,11 +80,17 @@ class NsfxKernel(private val context: Context, config: NsfxConfig, private val o
     private suspend fun runTask(id: String) {
         val task = requireNotNull(context.app.store.get(id))
         val recovered = withContext(Dispatchers.IO) { publisher.recover(task) }
-        if (recovered != null) { markComplete(id, recovered.first, recovered.second); return }
+        if (recovered != null) {
+            Logs.i(LogSource.DOWNLOAD, "${task.name} 上次已发布完成，直接恢复记录")
+            markComplete(id, recovered.first, recovered.second)
+            return
+        }
+        Logs.i(LogSource.DOWNLOAD, "开始下载：${task.name}（${logHost(task.url)}）")
         withContext(Dispatchers.IO) { context.app.store.update(id) { it.copy(state = "下载中", speed = 0) } }
         // GitHub release 会 302 到带约 1 小时时效签名的 CDN 地址；过期后再试只会得到 404，提前说明。
         val expired = GithubMirrors.expiredAssetNotice(task.url)
         if (expired != null) {
+            Logs.w(LogSource.DOWNLOAD, "${task.name} 未开始：$expired")
             withContext(Dispatchers.IO) { context.app.store.update(id) { it.copy(state = "失败", speed = 0, error = expired) } }
             return
         }
@@ -88,7 +98,12 @@ class NsfxKernel(private val context: Context, config: NsfxConfig, private val o
         val settings = context.app.settings.state.value
         val route = GithubMirrors.resolve(task.url, settings.githubMirror, settings.githubMirrorPick, settings.githubMirrors,
             proxyFor = { url -> context.app.proxies.forUrl(url) })
-        if (route.mirror.isNotEmpty()) android.util.Log.i("LeiFetch", "GitHub 镜像加速：${route.mirror}")
+        if (route.mirror.isNotEmpty()) {
+            android.util.Log.i("LeiFetch", "GitHub 镜像加速：${route.mirror}")
+            Logs.i(LogSource.MIRROR, "${task.name} 经镜像加速：${route.mirror}")
+        } else if (settings.githubMirror && GithubMirrors.isGithubUrl(task.url)) {
+            Logs.i(LogSource.MIRROR, "${task.name} 无可用镜像，直连 GitHub")
+        }
         if (route.mirror != task.mirror) {
             withContext(Dispatchers.IO) { context.app.store.update(id) { it.copy(mirror = route.mirror) } }
         }
@@ -108,6 +123,7 @@ class NsfxKernel(private val context: Context, config: NsfxConfig, private val o
             workDir(context, id).deleteRecursively()
         }
         val task = requireNotNull(context.app.store.get(id))
+        Logs.i(LogSource.DOWNLOAD, "${task.name} 完成 · ${bytes(size)}")
         finished.tryEmit(task)
         Notices.complete(context, task)
     }

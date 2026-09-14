@@ -25,6 +25,7 @@ class DownloaderActivity : ComponentActivity() {
             finish()
             return
         }
+        Logs.i(LogSource.CAPTURE, "$source 转交下载：${logHost(url)}")
         lifecycleScope.launch {
             try {
                 app.ready.await()

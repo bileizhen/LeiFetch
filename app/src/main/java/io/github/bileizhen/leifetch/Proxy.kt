@@ -126,7 +126,8 @@ fun describeProxy(proxy: Proxy?): String {
 }
 
 /** 当前模式下这次请求实际会走的线路，用于设置页摘要与连接测试结果。 */
-fun describeRoute(settings: ProxySettings, proxy: Proxy?): String = when {
+fun describeRoute(settings: ProxySettings, proxy: Proxy?, bypassed: Boolean = false): String = when {
+    bypassed -> "直连 · 在直连名单内"
     proxy != null -> "${ProxyMode.label(settings.mode)} · ${describeProxy(proxy)}"
     settings.mode == ProxyMode.NONE -> "不使用代理"
     settings.mode == ProxyMode.AUTO -> "未发现可用代理，将直连"
@@ -143,12 +144,20 @@ class ProxyManager(private val context: Context, private val settings: () -> Pro
     private val lock = Any()
     private var detected: Proxy? = null
     private var detectedAt = 0L
+    private var loggedRoute = ""
 
     fun forUrl(url: URL): Proxy? {
         val config = settings()
+        val bypassed = config.bypasses(url)
         val proxy = runCatching { ProxyResolver.resolve(config, url, ::system, ::auto) }.getOrNull()
         // HttpURLConnection 只在收到 407 时才问 Authenticator，这里按当前手动配置登记凭据。
         if (proxy != null && config.mode == ProxyMode.MANUAL) ProxyAuth.remember(config)
+        // 只在线路变化时记一条：解析是按请求调的，逐条记录会把日志冲掉。
+        val route = describeRoute(config, proxy, bypassed)
+        if (route != loggedRoute) {
+            loggedRoute = route
+            Logs.i(LogSource.PROXY, route)
+        }
         return proxy
     }
 
@@ -245,7 +254,8 @@ object ProxyTester {
                      url: String = GithubMirrors.speedTestTarget): Pair<Boolean, String> =
         withContext(Dispatchers.IO) {
             val proxy = manager.forUrl(url)
-            val route = describeRoute(settings, proxy)
+            val target = runCatching { URL(url) }.getOrNull()
+            val route = describeRoute(settings, proxy, target != null && settings.bypasses(target))
             val probe = runCatching {
                 GithubMirrors.probe(url, timeoutMs = 8000, followRedirects = true, proxy = proxy)
             }.getOrNull()

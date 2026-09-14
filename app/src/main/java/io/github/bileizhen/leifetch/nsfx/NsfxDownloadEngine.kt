@@ -3,7 +3,10 @@
 package io.github.bileizhen.leifetch.nsfx
 
 import android.content.Context
+import io.github.bileizhen.leifetch.LogSource
+import io.github.bileizhen.leifetch.Logs
 import io.github.bileizhen.leifetch.Task
+import io.github.bileizhen.leifetch.bytes
 import io.github.bileizhen.leifetch.workDir
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
@@ -34,16 +37,19 @@ class NsfxDownloadEngine(private val context: Context, private val config: NsfxC
         // 此处修改参照于neonsf，短长度文件直接单连接下载，避免多余的Range探测操作。
         if (task.expectedSize in 1 until SMALL_FILE_DIRECT_LIMIT && !storage.hasState()) {
             try {
+                Logs.i(LogSource.ENGINE, "${task.name} 小文件直连（${bytes(task.expectedSize)}）")
                 return@withContext single(task,
                     FileInfo(task.url, task.expectedSize, "", "", false), storage, progress, telemetry)
             } catch (_: SizeMismatch) {
                 // 来源提示已过期：重置不完整数据，回到权威探测路径作为fallback。
+                Logs.w(LogSource.ENGINE, "${task.name} 大小提示已失效，回到完整探测")
                 storage.reset()
             }
         }
         val info = probe(task)
         if (!info.supportsRange || info.size <= 0 || info.validator.isEmpty()) {
             storage.reset()
+            Logs.w(LogSource.ENGINE, "${task.name} 服务器不支持分段，改用单连接")
             return@withContext single(task, info, storage, progress, telemetry)
         }
         val (threads, count) = SegmentPlanner.calculate(info.size, config)
@@ -52,6 +58,11 @@ class NsfxDownloadEngine(private val context: Context, private val config: NsfxC
             RandomAccessFile(storage.partial, "rw").use { it.setLength(info.size); it.fd.sync() }
             (0 until count).map { i -> Segment(i, info.size * i / count, info.size * (i + 1) / count) }.toMutableList()
                 .also { storage.save(info, it) }
+        }
+        if (segments.any { it.downloaded > 0 }) {
+            Logs.i(LogSource.ENGINE, "${task.name} 从断点恢复：已完成 ${bytes(segments.sumOf { it.downloaded })} / ${bytes(info.size)}")
+        } else {
+            Logs.i(LogSource.ENGINE, "${task.name} 分段 ${count} 段 · 并发 $threads · ${bytes(info.size)}")
         }
         var concurrency = hostCap(info.url, threads)
         val pieceSize = PiecePolicy.pieceSize(info.size)
@@ -65,6 +76,7 @@ class NsfxDownloadEngine(private val context: Context, private val config: NsfxC
             } catch (e: HttpFailure) {
                 if (e.status !in setOf(429, 503) || concurrency <= 1 || round++ >= 6) throw e
                 concurrency = maxOf(1, concurrency / 2)
+                Logs.w(LogSource.ENGINE, "${task.name} 主机限流（HTTP ${e.status}），并发降至 $concurrency")
                 rememberHost(info.url, concurrency)
                 delay(NsfxRetryPolicy.delayMs(round))
             }

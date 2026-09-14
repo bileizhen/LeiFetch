@@ -59,6 +59,7 @@ class FilePublisher(private val context: Context) {
                 }
             }
             NsfxStorage.atomic(journal, record.put("complete", true).toString())
+            Logs.i(LogSource.DOWNLOAD, "${task.name} 已保存到${if (task.tree.isEmpty()) "应用内 downloads 目录" else displayTree(task.tree)}")
             uri.toString()
         } catch (e: Throwable) {
             if (localFile != null) localFile.delete() else DocumentFile.fromSingleUri(context, uri)?.delete()

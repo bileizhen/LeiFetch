@@ -81,6 +81,14 @@ The code is hosted on [GitHub](https://github.com/bileizhen/LeiFetch), and packa
 - Bottom navigation on phones, switching to a side rail once the window reaches 840 dp
 - The NSFX title gradient flows at a speed that follows the download state, and the engine scheduling illustration glides to a stop when a transfer ends; both are decorative and do not stand in for measurements
 
+### Runtime logs
+
+- Settings → Diagnostics → Logs: watch the runtime log live; new entries stick to the bottom, and scrolling back pauses following with a one-tap return to the latest
+- Covers downloads, the NSFX engine, GitHub mirrors, the proxy and the capture paths; logs from plugin processes (Firefox, system downloader) are relayed through the capture provider and land on the same timeline as the app process
+- Filter by level (info / warning / error), source and keyword, with the source filter built from the sources that actually appeared
+- One-tap diagnostic bundle: `logs.txt` (this page's log), `summary.json` (version and settings summary) and `logcat.txt` (a slice of this process's system log), which can be saved anywhere or shared directly
+- Only the latest 600 entries are kept, in memory only, never written to disk; addresses are recorded as host names without their query strings
+
 ### Local first
 
 - Settings and tasks live in on-device DataStore / SQLite; remote preferences are read-only mirrors
@@ -128,6 +136,10 @@ The generic plugin hooks the network layer and gets the full context of the orig
 
 Generic network interception preserves the host app's return values and callbacks, and interception is not transparent download virtualization. Cancel the original task before confirming a re-download, otherwise you end up with two copies of the file.
 
+### Why do download addresses appear in the log as host names only?
+
+A log is only useful for asking for help if it can be pasted somewhere, and a full link may carry a signature or credentials. Only the host name is recorded (for example `github.com`), query strings are never written, and the exported diagnostic bundle contains host names only as well.
+
 ### Are downloaded files kept after uninstalling?
 
 By default they are stored in app-internal storage and deleted on uninstall. Pick a SAF save directory in settings to keep files in an external location that survives uninstallation.
@@ -142,7 +154,7 @@ Downloads (including every segment of a resumed transfer), GitHub mirror benchma
 
 ## Privacy
 
-- Download probing never consumes the full file body; logs record fallback reasons but never the full download URL, which may carry credentials.
+- Download probing never consumes the full file body; logs record fallback reasons but never the full download URL, which may carry credentials — addresses are kept as host names only.
 - The developer and contributor roster on the about page loads avatars from Tencent's QQ avatar CDN; no other request is made.
 - With GitHub mirror acceleration enabled, the GitHub URLs of the affected tasks are forwarded through the selected mirror; mirror benchmarking only requests the first byte via Range and never consumes the file body.
 - With a proxy configured, downloads, mirror benchmarks and the Firefox probe are forwarded through it; automatic detection only connects to local loopback ports and performs proxy handshakes, makes no external request, and never reads the proxy configuration of other apps.

@@ -23,8 +23,10 @@ import java.util.concurrent.*
 
 class CaptureProvider : ContentProvider() {
     private val recent = mutableMapOf<Int, Long>()
+    private val recentLogs = mutableMapOf<Int, Long>()
     override fun onCreate() = true
     override fun call(method: String, arg: String?, extras: Bundle?): Bundle {
+        if (method == "log") return recordLog(extras)
         require(method == "capture")
         val c = requireNotNull(context)
         val uid = Binder.getCallingUid()
@@ -54,9 +56,34 @@ class CaptureProvider : ContentProvider() {
                 headers = headers, source = "$caller · ${j.optString("entry")}", tree = c.app.settings.state.value.tree,
                 expectedSize = j.optLong("expectedSize", -1).takeIf { it >= 0 } ?: -1))
             Notices.refreshCandidate(c)
+            Logs.i(LogSource.CAPTURE, "$caller 上报下载 ${logHost(url)}（${task.state}）")
             return Bundle().apply { putBoolean("accepted", true); putString("id", task.id) }
         } finally { Binder.restoreCallingIdentity(identity) }
     }
+
+    /**
+     * 插件进程的日志回传。与捕获同一套来源校验：只有被授权作用域的应用能写，
+     * 且模块未启用时不接收。按来源限流，避免宿主应用刷屏把环形缓冲冲掉。
+     */
+    private fun recordLog(extras: Bundle?): Bundle {
+        val c = requireNotNull(context)
+        val uid = Binder.getCallingUid()
+        val pref = c.getSharedPreferences("hook", Context.MODE_PRIVATE)
+        if (!pref.getBoolean("enabled", false)) return Bundle.EMPTY
+        val allowed = pref.getString("packages", "").orEmpty().split(Regex("[\\s,;]+"))
+        c.packageManager.getPackagesForUid(uid).orEmpty().firstOrNull { it in allowed }
+            ?: throw SecurityException("来源未授权")
+        synchronized(recentLogs) {
+            val now = SystemClock.elapsedRealtime()
+            if (now - (recentLogs[uid] ?: -1000) < 50) return Bundle.EMPTY
+            recentLogs[uid] = now
+        }
+        val source = extras?.getString("source")?.take(24).orEmpty().ifBlank { LogSource.PLUGIN }
+        val message = extras?.getString("message")?.take(400).orEmpty()
+        if (message.isNotBlank()) Logs.append(LogLevel.of(extras?.getString("level")), source, message)
+        return Bundle.EMPTY
+    }
+
     private fun runBlockingReady(c: Context) = kotlinx.coroutines.runBlocking {
         kotlinx.coroutines.withTimeout(5000) { c.app.ready.await() }
     }
@@ -176,7 +203,7 @@ class HookEntry : IXposedHookLoadPackage {
     private fun installSystemDownloads(packageName: String, classLoader: ClassLoader) {
         if (packageName == SystemDownloads.UI) { installDownloadsUiTakeover(); return }
         val provider = runCatching { classLoader.loadClass("${SystemDownloads.PROVIDER}.DownloadProvider") }
-            .onFailure { XposedBridge.log("LeiFetch 系统下载器：未找到 DownloadProvider，入队捕获未安装") }
+            .onFailure { hookLog(LogSource.SYSTEM, LogLevel.WARN, "未找到 DownloadProvider，入队捕获未安装") }
             .getOrNull() ?: return
         XposedHelpers.findAndHookMethod(provider, "insert", Uri::class.java, ContentValues::class.java, object : XC_MethodHook() {
             override fun afterHookedMethod(param: MethodHookParam) {
@@ -191,7 +218,7 @@ class HookEntry : IXposedHookLoadPackage {
                 }.onFailure { log("系统下载器入队捕获", it) }
             }
         })
-        XposedBridge.log("LeiFetch 系统下载器：DownloadProvider.insert 钩子已安装")
+        hookLog(LogSource.SYSTEM, LogLevel.INFO, "DownloadProvider.insert 钩子已安装")
     }
 
     /** 入队调用方（Binder 调用 uid）是否已被通用插件在自己的进程内接管上报。 */
@@ -223,7 +250,7 @@ class HookEntry : IXposedHookLoadPackage {
                 }.onFailure { log("系统下载界面接管", it) }
             }
         })
-        XposedBridge.log("LeiFetch 系统下载器：下载界面入口接管已安装")
+        hookLog(LogSource.SYSTEM, LogLevel.INFO, "下载界面入口接管已安装")
     }
 
     private fun installWebView() {
@@ -327,7 +354,7 @@ class HookEntry : IXposedHookLoadPackage {
             setOf("apk", "zip", "7z", "rar", "pdf", "iso", "exe", "mp4", "mp3", "bin")
     private fun installFirefox(clazz: Class<*>) {
         val setter = clazz.declaredMethods.firstOrNull { it.name == "setContentDelegate" && it.parameterTypes.size == 1 }
-        if (setter == null) { XposedBridge.log("LeiFetch Firefox：未找到 setContentDelegate，接管未安装"); return }
+        if (setter == null) { hookLog(LogSource.FIREFOX, LogLevel.WARN, "未找到 setContentDelegate，接管未安装"); return }
         if (!installed.add(setter)) return
         XposedBridge.hookMethod(setter, object : XC_MethodHook() {
             override fun beforeHookedMethod(param: MethodHookParam) {
@@ -349,12 +376,13 @@ class HookEntry : IXposedHookLoadPackage {
                                 try {
                                     // 浏览器进程读不到 LeiFetch 的 DataStore，代理配置经 hook 偏好传递。
                                     val verified = FirefoxProbe.verify(url, headers, onRejected = { reason ->
-                                        XposedBridge.log("LeiFetch Firefox：$reason，保留 Firefox 下载")
+                                        hookLog(LogSource.FIREFOX, LogLevel.WARN, "$reason，保留 Firefox 下载")
                                     }, proxy = proxyManager()?.forUrl(url)) ?: return@runCatching false
                                     val name = URLUtil.guessFileName(url, FirefoxProbe.header(headers, "Content-Disposition"),
                                         FirefoxProbe.header(headers, "Content-Type"))
                                     val ok = capture(verified.url, emptyMap(), name, "Firefox 插件接管", verified.totalLength)
-                                    XposedBridge.log(if (ok) "LeiFetch Firefox：已接管下载" else "LeiFetch Firefox：任务入库失败，保留 Firefox 下载")
+                                    hookLog(LogSource.FIREFOX, if (ok) LogLevel.INFO else LogLevel.WARN,
+                                        if (ok) "已接管下载" else "任务入库失败，保留 Firefox 下载")
                                     ok
                                 } finally { probing.set(false) }
                             }.getOrDefault(false)
@@ -367,7 +395,7 @@ class HookEntry : IXposedHookLoadPackage {
                 }
             }
         })
-        XposedBridge.log("LeiFetch Firefox：onExternalResponse 钩子已安装")
+        hookLog(LogSource.FIREFOX, LogLevel.INFO, "onExternalResponse 钩子已安装")
     }
     private fun submit(url: String, headers: Map<String, String>, name: String?, entry: String,
                        expectedSize: Long = -1) {
@@ -397,7 +425,22 @@ class HookEntry : IXposedHookLoadPackage {
         executor.execute { runCatching(action).onFailure { log("上报", it) } }; true
     } catch (_: RejectedExecutionException) { false }
     private fun log(where: String, error: Throwable) {
-        XposedBridge.log("LeiFetch $where: ${error.javaClass.simpleName}: ${error.message}")
         XposedBridge.log(error)
+        hookLog(where, LogLevel.ERROR, "${error.javaClass.simpleName}: ${error.message?.take(160).orEmpty()}")
+    }
+    /**
+     * 插件进程的日志：既写进 LSPosed 自己的日志，也回传到 LeiFetch 应用进程的日志页，
+     * 这样在应用里就能看到浏览器/系统下载器进程里发生了什么。回传失败不影响插件本身。
+     */
+    private fun hookLog(source: String, level: LogLevel, message: String) {
+        XposedBridge.log("LeiFetch $source：$message")
+        runCatching {
+            context?.contentResolver?.call(Uri.parse("content://$PKG.capture"), "log", null,
+                Bundle().apply {
+                    putString("source", source)
+                    putString("level", level.name)
+                    putString("message", message)
+                })
+        }
     }
 }

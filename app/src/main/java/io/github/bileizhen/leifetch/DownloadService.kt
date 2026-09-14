@@ -24,6 +24,7 @@ class DownloadService : Service() {
             stopSelf()
         }
         wake = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "LeiFetch:NSFX").apply { setReferenceCounted(false) }
+        Logs.i(LogSource.SERVICE, "下载服务启动（线程 ${config.threads} · 并发任务 ${config.maxTasks} · 连接预算 ${config.connections}）")
         scope.launch { while (isActive) { wake.acquire(10 * 60_000L); delay(5 * 60_000L) } }
         scope.launch {
             while (isActive) {
@@ -44,9 +45,10 @@ class DownloadService : Service() {
                 kernel.startDownload(id)
                 Notices.refreshCandidate(this, exclude = id)
             }
-            "pause" -> kernel.pauseDownload(id)
-            "cancel" -> { kernel.cancelDownload(id); Notices.refreshCandidate(this) }
+            "pause" -> { Logs.i(LogSource.SERVICE, "暂停任务 ${app.store.get(id)?.name.orEmpty()}"); kernel.pauseDownload(id) }
+            "cancel" -> { Logs.i(LogSource.SERVICE, "取消任务 ${app.store.get(id)?.name.orEmpty()}"); kernel.cancelDownload(id); Notices.refreshCandidate(this) }
             "ignore" -> {
+                Logs.i(LogSource.SERVICE, "忽略待确认任务 ${app.store.get(id)?.name.orEmpty()}")
                 // 同步执行：紧随其后的 stopSelf 会取消协程作用域。
                 runCatching {
                     if (app.store.get(id)?.state == "待确认") {
@@ -61,11 +63,13 @@ class DownloadService : Service() {
         return START_NOT_STICKY
     }
     override fun onTimeout(startId: Int, fgsType: Int) {
+        Logs.w(LogSource.SERVICE, "前台服务超时，停止传输")
         kernel.stop()
         if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE) else stopForeground(true)
         stopSelf()
     }
     override fun onDestroy() {
+        Logs.i(LogSource.SERVICE, "下载服务停止")
         kernel.stop(); scope.cancel()
         if (wake.isHeld) wake.release()
         super.onDestroy()

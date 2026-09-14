@@ -99,6 +99,10 @@ import io.github.bileizhen.leifetch.ui.util.BlurredBar
 import io.github.bileizhen.leifetch.ui.util.rememberBlurBackdrop
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import top.yukonga.miuix.kmp.basic.*
 import top.yukonga.miuix.kmp.blur.layerBackdrop
 import top.yukonga.miuix.kmp.blur.rememberLayerBackdrop
@@ -185,6 +189,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // 日志页：筛选条件与实时跟随。过滤在 ViewModel 里做，界面只渲染结果。
+    private val logFilter = MutableStateFlow(LogFilter())
+    val logUi: StateFlow<LogUiState> = combine(Logs.entries, logFilter) { entries, filter ->
+        LogUiState(
+            entries = filterLogs(entries, filter.level, filter.source, filter.query),
+            sources = entries.map { it.source }.distinct(),
+            total = entries.size,
+            level = filter.level, source = filter.source, query = filter.query,
+        )
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), LogUiState())
+    // 日志页是否实时跟随最新；用户往回翻时自动关掉，点“回到最新”再打开。
+    private var logFollow by mutableStateOf(true)
+    val logLive: Boolean get() = logFollow
+    fun setLogLevel(level: LogLevel?) { logFilter.value = logFilter.value.copy(level = level) }
+    fun setLogSource(source: String?) { logFilter.value = logFilter.value.copy(source = source) }
+    fun setLogQuery(query: String) { logFilter.value = logFilter.value.copy(query = query) }
+    fun setLogLive(live: Boolean) { logFollow = live }
+    fun clearLogs() = Logs.clear()
+
     /** 通过 libxposed 服务向 LSPosed 申请作用域；结果以 Toast 提示（回调已回到主线程）。 */
     fun requestScope(packages: List<String>) {
         if (packages.isEmpty()) return
@@ -224,6 +247,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             app.settings.edit { it.copy(clipboardSeen = ((seen + url).takeLast(64)).joinToString("\n")) }
         }
         if (app.store.tasks.value.any { it.url == url && it.state !in setOf("已完成", "已取消") }) return@launch
+        Logs.i(LogSource.APP, "剪贴板发现下载链接：${logHost(url)}")
         clipboardSuggest.value = url
     }
     fun add(url: String, onAdded: (Task) -> Unit = {}) = work {
@@ -232,6 +256,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val task = withContext(Dispatchers.IO) {
             app.store.add(Task(url = url.trim(), name = safeName(u.lastPathSegment ?: "download.bin"), tree = config.value.tree))
         }
+        Logs.i(LogSource.APP, "新建任务：${task.name}（${logHost(task.url)}）")
         onAdded(task)
     }
     fun start(id: String) = work {
@@ -250,6 +275,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         Notices.refreshCandidate(app)
     }
     fun delete(task: Task) = work {
+        Logs.i(LogSource.APP, "删除任务：${task.name}")
         withContext(Dispatchers.IO) {
             if (task.uri.isNotEmpty()) {
                 val uri = Uri.parse(task.uri)
@@ -391,6 +417,7 @@ private fun LeiFetchApp(vm: MainViewModel, startPage: Int = 0) {
 private fun LeiFetchScreen(vm: MainViewModel, startPage: Int = 0) {
     val tasks by vm.tasks.collectAsStateWithLifecycle()
     val config by vm.config.collectAsStateWithLifecycle()
+    val logUi by vm.logUi.collectAsStateWithLifecycle()
     val error by vm.error.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var selectedPage by rememberSaveable { mutableIntStateOf(0) }
@@ -457,7 +484,7 @@ private fun LeiFetchScreen(vm: MainViewModel, startPage: Int = 0) {
     }
     BoxWithConstraints(Modifier.fillMaxSize()) {
     val wideLayout = maxWidth >= 840.dp
-    val pages = listOf("仪表盘", "下载", "插件", "设置", "外观", "GitHub 镜像", "代理")
+    val pages = listOf("仪表盘", "下载", "插件", "设置", "外观", "GitHub 镜像", "代理", "日志")
     val icons = listOf(TransferIcons.Dashboard, TransferIcons.Download, TransferIcons.Plugins, TransferIcons.Settings)
     val usePredictiveBack = config.predictiveBack && Build.VERSION.SDK_INT >= 34
     val listStates = List(pages.size) { rememberLazyListState() }
@@ -664,10 +691,12 @@ private fun LeiFetchScreen(vm: MainViewModel, startPage: Int = 0) {
                             onOpenAbout = { if (backStack.size == 1) backStack = backStack + 5 },
                             onOpenMirrors = { if (backStack.size == 1) backStack = backStack + 8 },
                             onOpenProxy = { if (backStack.size == 1) backStack = backStack + 9 },
+                            onOpenLogs = { if (backStack.size == 1) backStack = backStack + 10 },
                             pickTree = { treePicker.launch(null) })
                         4 -> appearanceItems(config, vm)
                         5 -> mirrorItems(config, vm)
                         6 -> proxyItems(config, vm)
+                        7 -> logItems(vm, logUi, listStates[page])
                     }
                 }
             }
@@ -693,6 +722,7 @@ private fun LeiFetchScreen(vm: MainViewModel, startPage: Int = 0) {
                 entry(4) { pageContent(4, Modifier.fillMaxSize()) }
                 entry(8) { pageContent(5, Modifier.fillMaxSize()) }
                 entry(9) { pageContent(6, Modifier.fillMaxSize()) }
+                entry(10) { pageContent(7, Modifier.fillMaxSize()) }
                 entry(5) {
                     AboutScreenMiuix(
                         state = AboutUiState(),
@@ -896,7 +926,7 @@ private fun proxySummary(proxy: ProxySettings): String = when (proxy.mode) {
 
 private fun LazyListScope.settingsItems(config: Config, vm: MainViewModel, onOpenAppearance: () -> Unit,
                                         onOpenAbout: () -> Unit, onOpenMirrors: () -> Unit,
-                                        onOpenProxy: () -> Unit, pickTree: () -> Unit) {
+                                        onOpenProxy: () -> Unit, onOpenLogs: () -> Unit, pickTree: () -> Unit) {
     item { SmallTitle("NSFX 下载内核", insideMargin = sectionTitleMargin) }
     item {
         Card {
@@ -1013,6 +1043,8 @@ private fun LazyListScope.settingsItems(config: Config, vm: MainViewModel, onOpe
                 checked = config.clipboardDetect, onCheckedChange = { v -> vm.edit { it.copy(clipboardDetect = v) } })
             ArrowPreference(title = "外观", summary = "主题颜色与界面效果",
                 startAction = { SettingsIcon(Icons.Rounded.Palette) }, onClick = onOpenAppearance)
+            ArrowPreference(title = "日志", summary = "实时查看运行日志，可导出或分享诊断包",
+                startAction = { SettingsIcon(Icons.Rounded.BugReport) }, onClick = onOpenLogs)
             ArrowPreference(title = "关于", summary = "LeiFetch ${BuildConfig.VERSION_NAME} · bileizhen",
                 startAction = { SettingsIcon(Icons.Rounded.ContactPage) }, onClick = onOpenAbout)
         }

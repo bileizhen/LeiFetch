@@ -63,6 +63,7 @@ object XposedServiceClient {
     fun onBinder(raw: IBinder) {
         if (!raw.pingBinder()) return
         android.util.Log.i(TAG, "libxposed 服务 binder 已到达")
+        Logs.i(LogSource.PLUGIN, "已连接 LSPosed 服务，可申请作用域")
         binder = raw
         val callbacks = waiting.toList()
         waiting.clear()
@@ -83,6 +84,7 @@ object XposedServiceClient {
             reply.createStringArrayList().orEmpty()
         } catch (error: Exception) {
             android.util.Log.d(TAG, "scope: ${error.javaClass.simpleName}: ${error.message?.take(120)}")
+            Logs.w(LogSource.PLUGIN, "读取作用域失败：${error.javaClass.simpleName}")
             null
         } finally {
             reply.recycle(); data.recycle()
@@ -108,13 +110,19 @@ object XposedServiceClient {
                 CALLBACK_APPROVED -> {
                     data.enforceInterface(CALLBACK_DESCRIPTOR)
                     val approved = data.createStringArrayList().orEmpty()
-                    if (scopeCallbacks.remove(this)) main.post { onResult(approved, null) }
+                    if (scopeCallbacks.remove(this)) main.post {
+                        Logs.i(LogSource.PLUGIN, "作用域已授权：${approved.joinToString("、").ifEmpty { "无" }}")
+                        onResult(approved, null)
+                    }
                     true
                 }
                 CALLBACK_FAILED -> {
                     data.enforceInterface(CALLBACK_DESCRIPTOR)
                     val message = data.readString() ?: "授权未完成"
-                    if (scopeCallbacks.remove(this)) main.post { onResult(null, message) }
+                    if (scopeCallbacks.remove(this)) main.post {
+                        Logs.w(LogSource.PLUGIN, "作用域授权未完成：$message")
+                        onResult(null, message)
+                    }
                     true
                 }
                 else -> super.onTransact(code, data, reply, flags)
@@ -129,6 +137,7 @@ object XposedServiceClient {
             target.transact(TRANSACTION_REQUEST_SCOPE, data, null, IBinder.FLAG_ONEWAY)
         } catch (error: Exception) {
             android.util.Log.d(TAG, "requestScope: ${error.javaClass.simpleName}: ${error.message?.take(120)}")
+            Logs.e(LogSource.PLUGIN, "作用域请求发送失败：${error.javaClass.simpleName}")
             false
         } finally {
             data.recycle()

@@ -27,6 +27,10 @@ Miuix、AndroidX、Kotlin Coroutines、Gradle Wrapper 的原始版权及许可�
 
 `XposedService.kt` 移植自 [XBlocker](https://github.com/bileizhen/XBlocker)（同一作者，授权移植）的 `data/XposedServiceProvider.kt`：经 `<包名>.XposedService` 提供者接收 LSPosed 推送的 libxposed 服务 binder，并以手写 binder Parcel 调用 `io.github.libxposed.service.IXposedService` 查询 / 申请模块作用域（避开中文路径下 AGP 的 AIDL 解析问题）。GPL-3.0，与本项目许可证一致。
 
+## 运行日志与诊断包（2026-09-14）
+
+`Logs.kt` 的日志缓冲、级别 / 来源模型与诊断包导出（zip 内含 `logs.txt`、`summary.json`、`logcat.txt`）改编自 [XBlocker](https://github.com/bileizhen/XBlocker)（同一作者，授权移植）的 `data/DiagnosticReport.kt` 与 `ui/SendLogDialog.kt`：保留其「ZIP 诊断包 + 保存 / 分享」的形态、只取本进程 logcat 的做法，以及不请求 root、不读取框架私有日志的边界；改为面向应用内的实时日志缓冲，并增加按级别 / 来源 / 关键字的筛选与实时跟随。`ui/LogScreen.kt` 为本项目原创。GPL-3.0，与本项目许可证一致。
+
 ## 弹性滑块（2026-09-11）
 
 `ui/component/ElasticSlider.kt` 的交互按 [vue-bits ElasticSlider](https://vue-bits.dev/components/elastic-slider) 重写。
