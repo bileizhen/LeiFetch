@@ -107,8 +107,6 @@ The Firefox plugin watches GeckoView external responses and then probes public H
 
 Via's “third-party downloader” uses a built-in allowlist maintained by its author: when selected, Via explicitly launches the download component of an allowlisted app with ACTION_SEND + text/plain, passing only the download URL and no UA / cookies / filename, and the list cannot be extended from the downloader side (see the Via author's explanation in [gopeed#412](https://github.com/GopeedLab/gopeed/issues/412)). LeiFetch already implements that contract (the exported `DownloaderActivity` reads `EXTRA_TEXT`, queues it and starts downloading immediately), so you can share a link to LeiFetch from Via or any other app, or copy it and open LeiFetch to let clipboard detection take over.
 
-To select LeiFetch directly in Via's settings, its author has to add LeiFetch to the allowlist — you can file a request at [tuyafeng/Via](https://github.com/tuyafeng/Via/issues) with these three definitions: `io.github.bileizhen.leifetch`, `io.github.bileizhen.leifetch.DownloaderActivity` and `io.github.bileizhen.leifetch.MainActivity`.
-
 ### The system downloader plugin is enabled but nothing happens?
 
 That plugin needs both `com.android.providers.downloads` and `com.android.providers.downloads.ui` ticked in LSPosed, and only takes effect after a reboot. With just the former, enqueues are captured but the system download list and notification entry points are not redirected; with just the latter there is nothing to capture from.
