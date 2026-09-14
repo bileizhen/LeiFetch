@@ -146,7 +146,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         mirrorResults = emptyMap()
         try {
             mirrorResults = GithubMirrors.measure(
-                GithubMirrors.effectiveList(app.settings.state.value.githubMirrors), target)
+                GithubMirrors.effectiveList(app.settings.state.value.githubMirrors), target,
+                proxyFor = { url -> app.proxies.forUrl(url) })
         } finally { mirrorTesting = false }
     }
     fun selectMirror(mirror: String) = edit { it.copy(githubMirrorPick = mirror) }
@@ -155,6 +156,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
     fun removeMirror(mirror: String) = edit {
         it.copy(githubMirrors = GithubMirrors.parseCustom(it.githubMirrors).filter { m -> m != mirror }.joinToString("\n"))
+    }
+
+    // 代理连接测试：与下载内核同一套探测请求；自动模式会先丢弃缓存重新探测本机代理端口。
+    var proxyTesting by mutableStateOf(false)
+        private set
+    var proxyOk by mutableStateOf(false)
+        private set
+    var proxyResult by mutableStateOf("")
+        private set
+    fun testProxy() = viewModelScope.launch {
+        if (proxyTesting) return@launch
+        proxyTesting = true
+        proxyResult = ""
+        try {
+            val settings = config.value.proxy
+            app.proxies.invalidate()
+            val (ok, detail) = ProxyTester.test(app.proxies, settings)
+            proxyOk = ok
+            proxyResult = (if (ok) "连通 · " else "不通 · ") + detail
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            proxyOk = false
+            proxyResult = "不通 · ${e.message ?: e.javaClass.simpleName}"
+        } finally {
+            proxyTesting = false
+        }
     }
 
     /** 通过 libxposed 服务向 LSPosed 申请作用域；结果以 Toast 提示（回调已回到主线程）。 */
@@ -429,7 +457,7 @@ private fun LeiFetchScreen(vm: MainViewModel, startPage: Int = 0) {
     }
     BoxWithConstraints(Modifier.fillMaxSize()) {
     val wideLayout = maxWidth >= 840.dp
-    val pages = listOf("仪表盘", "下载", "插件", "设置", "外观", "GitHub 镜像")
+    val pages = listOf("仪表盘", "下载", "插件", "设置", "外观", "GitHub 镜像", "代理")
     val icons = listOf(TransferIcons.Dashboard, TransferIcons.Download, TransferIcons.Plugins, TransferIcons.Settings)
     val usePredictiveBack = config.predictiveBack && Build.VERSION.SDK_INT >= 34
     val listStates = List(pages.size) { rememberLazyListState() }
@@ -635,9 +663,11 @@ private fun LeiFetchScreen(vm: MainViewModel, startPage: Int = 0) {
                             onOpenAppearance = { if (backStack.size == 1) backStack = backStack + 4 },
                             onOpenAbout = { if (backStack.size == 1) backStack = backStack + 5 },
                             onOpenMirrors = { if (backStack.size == 1) backStack = backStack + 8 },
+                            onOpenProxy = { if (backStack.size == 1) backStack = backStack + 9 },
                             pickTree = { treePicker.launch(null) })
                         4 -> appearanceItems(config, vm)
                         5 -> mirrorItems(config, vm)
+                        6 -> proxyItems(config, vm)
                     }
                 }
             }
@@ -662,6 +692,7 @@ private fun LeiFetchScreen(vm: MainViewModel, startPage: Int = 0) {
                 }
                 entry(4) { pageContent(4, Modifier.fillMaxSize()) }
                 entry(8) { pageContent(5, Modifier.fillMaxSize()) }
+                entry(9) { pageContent(6, Modifier.fillMaxSize()) }
                 entry(5) {
                     AboutScreenMiuix(
                         state = AboutUiState(),
@@ -794,7 +825,7 @@ private fun LazyListScope.pluginItems(config: Config, vm: MainViewModel) {
 }
 
 @Composable
-private fun Notice(text: String) {
+internal fun Notice(text: String) {
     Text(text, modifier = Modifier.padding(horizontal = 6.dp), fontSize = 13.sp, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
 }
 
@@ -854,8 +885,18 @@ private fun compactInput(value: Double): String =
     if (value == value.toLong().toDouble()) value.toLong().toString()
     else String.format(Locale.ROOT, "%.2f", value).trimEnd('0').trimEnd('.')
 
+/** 设置页的代理摘要：只描述配置本身；具体线路要按目标地址解析，在代理页里测。 */
+private fun proxySummary(proxy: ProxySettings): String = when (proxy.mode) {
+    ProxyMode.NONE -> "所有下载与探测直连"
+    ProxyMode.SYSTEM -> "跟随系统代理设置"
+    ProxyMode.MANUAL -> if (proxy.usable) "${ProxyType.label(proxy.type)} · ${proxy.host}:${proxy.port}"
+        else "未填写服务器地址，将直连"
+    else -> "优先系统代理，其次探测本机代理端口"
+}
+
 private fun LazyListScope.settingsItems(config: Config, vm: MainViewModel, onOpenAppearance: () -> Unit,
-                                        onOpenAbout: () -> Unit, onOpenMirrors: () -> Unit, pickTree: () -> Unit) {
+                                        onOpenAbout: () -> Unit, onOpenMirrors: () -> Unit,
+                                        onOpenProxy: () -> Unit, pickTree: () -> Unit) {
     item { SmallTitle("NSFX 下载内核", insideMargin = sectionTitleMargin) }
     item {
         Card {
@@ -919,6 +960,13 @@ private fun LazyListScope.settingsItems(config: Config, vm: MainViewModel, onOpe
                 startAction = { SettingsIcon(Icons.Rounded.Save) }, onClick = pickTree)
             SuperSwitch(title = "应用内保存", summary = "对新任务生效；卸载应用会删除应用内文件",
                 checked = config.tree.isEmpty(), onCheckedChange = { v -> if (v) vm.edit { it.copy(tree = "") } })
+        }
+    }
+    item { SmallTitle("网络", insideMargin = sectionTitleMargin) }
+    item {
+        Card {
+            ArrowPreference(title = "代理", summary = proxySummary(config.proxy),
+                startAction = { SettingsIcon(Icons.Rounded.Proxy) }, onClick = onOpenProxy)
         }
     }
     item { SmallTitle("GitHub 加速", insideMargin = sectionTitleMargin) }
