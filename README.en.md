@@ -45,6 +45,15 @@ The code is hosted on [GitHub](https://github.com/bileizhen/LeiFetch), and packa
 - When a download starts, every mirror is benchmarked in parallel with the download URL itself; a mirror only qualifies if it returns a 206 partial response whose total length matches the direct connection, which rules out error pages and stale files, and the fastest qualifying mirror wins
 - Ships with 5 mirrors and supports custom and manually specified ones
 
+### Proxy
+
+- Four modes: no proxy, system proxy (default), manual configuration, automatic (recommended)
+- The default is “system proxy”, which matches the behaviour before proxy support existed and never changes an existing user's route; switch to “automatic” only when you want it to go further
+- Manual configuration supports HTTP and SOCKS5, username / password authentication, and a bypass list (domain suffix, `*`, `<local>`)
+- Automatic mode follows the system proxy first, then probes the common local proxy ports and falls back to a direct connection; the candidates cover the default listeners of Clash, Clash Verge, v2rayN, sing-box, Privoxy and packet-capture tools
+- Probing checks whether the port is listening first and then confirms it really is a proxy with an HTTP CONNECT / SOCKS5 handshake; the result is cached for 5 minutes, and only local TCP connections and protocol handshakes are made, so no download traffic is generated
+- Downloads, GitHub mirror benchmarks and the Firefox plugin probe share one configuration, and the proxy page can test the current route in one tap, reporting the route actually used and the first-byte latency
+
 ### Download interception
 
 - Generic DownloadManager / OkHttp / HttpURLConnection / WebView interception, plus a Firefox GeckoView adapter
@@ -123,11 +132,20 @@ Generic network interception preserves the host app's return values and callback
 
 By default they are stored in app-internal storage and deleted on uninstall. Pick a SAF save directory in settings to keep files in an external location that survives uninstallation.
 
+### Automatic proxy mode did not find my proxy?
+
+Automatic mode only probes the common proxy ports on the local loopback address, so the proxy client needs to listen on `127.0.0.1`. If your port is not among the candidates, or the proxy runs on another device on your LAN, choose “manual configuration” under Settings → Network → Proxy and enter the address and port. If your proxy client takes over traffic through a VPN / TUN interface, the system already forwards it transparently and either “automatic” or “no proxy” works.
+
+### Which requests does the proxy configuration cover?
+
+Downloads (including every segment of a resumed transfer), GitHub mirror benchmarks and the Firefox plugin's independent probe all use the same configuration. Addresses on the bypass list are always connected directly. The proxy only affects requests LeiFetch makes itself and does not change how intercepted apps use the network.
+
 ## Privacy
 
 - Download probing never consumes the full file body; logs record fallback reasons but never the full download URL, which may carry credentials.
 - The developer and contributor roster on the about page loads avatars from Tencent's QQ avatar CDN; no other request is made.
 - With GitHub mirror acceleration enabled, the GitHub URLs of the affected tasks are forwarded through the selected mirror; mirror benchmarking only requests the first byte via Range and never consumes the file body.
+- With a proxy configured, downloads, mirror benchmarks and the Firefox probe are forwarded through it; automatic detection only connects to local loopback ports and performs proxy handshakes, makes no external request, and never reads the proxy configuration of other apps.
 - Rules and configuration are matched and stored on-device; task lists, URLs and site information are never uploaded.
 - The network is used only for downloads and probes you start; there is no telemetry or analytics.
 
