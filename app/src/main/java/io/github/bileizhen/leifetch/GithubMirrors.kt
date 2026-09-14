@@ -5,6 +5,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import java.net.HttpURLConnection
+import java.net.Proxy
 import java.net.URL
 
 /** GitHub 下载加速：识别 GitHub 直链，经「镜像前缀 + 原链接」转发；实测各镜像首字节延迟择优。 */
@@ -97,10 +98,11 @@ object GithubMirrors {
      * 探测目标就是下载地址本身（Range 0-0），故规范 github.com 地址与签名 CDN 地址都能按
      * 镜像真实转发能力评估；全部不可用时保持原链接直连。
      */
-    suspend fun resolve(url: String, enabled: Boolean, pick: String, customRaw: String): Route {
+    suspend fun resolve(url: String, enabled: Boolean, pick: String, customRaw: String,
+                        proxyFor: (String) -> Proxy? = { null }): Route {
         if (!enabled || !isGithubUrl(url)) return Route(url)
         val mirrors = effectiveList(customRaw)
-        val (probes, direct) = survey(mirrors, url)
+        val (probes, direct) = survey(mirrors, url, proxyFor = proxyFor)
         val chosen = chooseMirror(mirrors, pick, probes, direct) ?: return Route(url)
         return Route(rewrite(url, chosen), chosen)
     }
@@ -117,28 +119,37 @@ object GithubMirrors {
     }
 
     /** 并行探测各镜像与直连基准（同一批发出，互不增加等待）。 */
-    suspend fun survey(mirrors: List<String>, url: String, timeoutMs: Int = 4000): Pair<Map<String, Probe?>, Probe?> =
+    suspend fun survey(mirrors: List<String>, url: String, timeoutMs: Int = 4000,
+                       proxyFor: (String) -> Proxy? = { null }): Pair<Map<String, Probe?>, Probe?> =
         coroutineScope {
-            val jobs = mirrors.map { async(Dispatchers.IO) { it to probe(rewrite(url, it), timeoutMs) } }
-            val direct = async(Dispatchers.IO) { probe(url, timeoutMs, followRedirects = true) }
+            val jobs = mirrors.map { async(Dispatchers.IO) {
+                val rewritten = rewrite(url, it)
+                it to probe(rewritten, timeoutMs, proxy = proxyFor(rewritten))
+            } }
+            val direct = async(Dispatchers.IO) { probe(url, timeoutMs, followRedirects = true, proxy = proxyFor(url)) }
             jobs.awaitAll().toMap() to direct.await()
         }
 
     /** 镜像测速（设置页）：各镜像首字节延迟；null 表示不可用。 */
-    suspend fun measure(mirrors: List<String>, target: String, timeoutMs: Int = 4000): Map<String, Long?> =
+    suspend fun measure(mirrors: List<String>, target: String, timeoutMs: Int = 4000,
+                        proxyFor: (String) -> Proxy? = { null }): Map<String, Long?> =
         coroutineScope {
-            mirrors.map { async(Dispatchers.IO) { it to probe(rewrite(target, it), timeoutMs)?.latencyMs } }
-                .awaitAll().toMap()
+            mirrors.map { async(Dispatchers.IO) {
+                val rewritten = rewrite(target, it)
+                it to probe(rewritten, timeoutMs, proxy = proxyFor(rewritten))?.latencyMs
+            } }.awaitAll().toMap()
         }
 
     /**
      * Range 0-0 首字节探测。只接受 206 且 Content-Range 总长有效；仅看状态码会把「返回 200 +
      * 错误页」的镜像误判为可用，从而被选中并让下载拿到错误内容。
+     * [proxy] 为 null 表示直连（不跟随系统代理），与下载内核的线路保持一致。
      */
-    fun probe(rawUrl: String, timeoutMs: Int = 4000, followRedirects: Boolean = false): Probe? {
+    fun probe(rawUrl: String, timeoutMs: Int = 4000, followRedirects: Boolean = false,
+              proxy: Proxy? = null): Probe? {
         var connection: HttpURLConnection? = null
         return try {
-            val c = (URL(rawUrl).openConnection() as HttpURLConnection).also { connection = it }
+            val c = (URL(rawUrl).openConnection(proxy ?: Proxy.NO_PROXY) as HttpURLConnection).also { connection = it }
             // 镜像应直接返回文件；直连基准需要跟随 GitHub 到签名 CDN 才能拿到总长。
             c.instanceFollowRedirects = followRedirects
             c.useCaches = false

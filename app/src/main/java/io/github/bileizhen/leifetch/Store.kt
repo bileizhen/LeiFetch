@@ -28,7 +28,8 @@ data class Config(
     val blur: Boolean = true, val floatingBar: Boolean = true, val liquidGlass: Boolean = true,
     val predictiveBack: Boolean = true, val scale: Float = 1f, val plugins: String = "generic",
     val githubMirror: Boolean = true, val githubMirrorPick: String = "auto", val githubMirrors: String = "",
-    val clipboardDetect: Boolean = true, val clipboardSeen: String = ""
+    val clipboardDetect: Boolean = true, val clipboardSeen: String = "",
+    val proxy: ProxySettings = ProxySettings()
 )
 
 class Settings(private val context: Context, scope: CoroutineScope) {
@@ -55,12 +56,19 @@ class Settings(private val context: Context, scope: CoroutineScope) {
     private val githubMirrors = stringPreferencesKey("githubMirrors")
     private val clipboardDetect = booleanPreferencesKey("clipboardDetect")
     private val clipboardSeen = stringPreferencesKey("clipboardSeen")
+    private val proxyMode = stringPreferencesKey("proxyMode")
+    private val proxyType = stringPreferencesKey("proxyType")
+    private val proxyHost = stringPreferencesKey("proxyHost")
+    private val proxyPort = intPreferencesKey("proxyPort")
+    private val proxyUser = stringPreferencesKey("proxyUser")
+    private val proxyPassword = stringPreferencesKey("proxyPassword")
+    private val proxyBypass = stringPreferencesKey("proxyBypass")
     private fun Preferences.read() = Config(
         p_threads(), p_tree(), p_notices(), p_fluid(), p_enabled(), p_packages(),
         p_colorMode(), p_maxTasks(), p_connections(), p_speedLimit(), p_dynamic(),
         p_blur(), p_floatingBar(), p_liquidGlass(), p_predictiveBack(), p_scale(), this[plugins] ?: "generic",
         this[githubMirror] ?: true, this[githubMirrorPick] ?: "auto", this[githubMirrors] ?: "",
-        this[clipboardDetect] ?: true, this[clipboardSeen] ?: ""
+        this[clipboardDetect] ?: true, this[clipboardSeen] ?: "", p_proxy()
     )
     private fun Preferences.p_threads() = this[threads] ?: 4
     private fun Preferences.p_tree() = this[tree] ?: ""
@@ -79,15 +87,25 @@ class Settings(private val context: Context, scope: CoroutineScope) {
     private fun Preferences.p_liquidGlass() = this[liquidGlass] ?: true
     private fun Preferences.p_predictiveBack() = this[predictiveBack] ?: true
     private fun Preferences.p_scale() = this[scale] ?: 1f
+    private fun Preferences.p_proxy() = ProxySettings(
+        mode = this[proxyMode]?.takeIf { it in ProxyMode.all } ?: ProxyMode.SYSTEM,
+        type = this[proxyType]?.takeIf { it == ProxyType.SOCKS } ?: ProxyType.HTTP,
+        host = this[proxyHost] ?: "", port = this[proxyPort] ?: 0,
+        username = this[proxyUser] ?: "", password = this[proxyPassword] ?: "",
+        bypass = this[proxyBypass] ?: ""
+    )
     val state = context.dataStore.data.map { it.read() }.stateIn(scope, SharingStarted.Eagerly, Config())
 
     init {
         scope.launch(Dispatchers.IO) {
             context.dataStore.data.collect { p ->
+                val config = p.read()
                 check(context.getSharedPreferences("hook", Context.MODE_PRIVATE).edit()
                     .putBoolean("enabled", p[enabled] ?: false)
-                    .putString("packages", HookPlugins.packages(p.read()).joinToString(","))
-                    .putString("plugins", p[plugins] ?: "generic").commit())
+                    .putString("packages", HookPlugins.packages(config).joinToString(","))
+                    .putString("plugins", p[plugins] ?: "generic")
+                    // Firefox 插件在浏览器进程里独立探测，只能经偏好提供者拿到代理配置。
+                    .putString("proxy", config.proxy.encode()).commit())
             }
         }
     }
@@ -117,6 +135,13 @@ class Settings(private val context: Context, scope: CoroutineScope) {
             p[githubMirrors] = next.githubMirrors.trim()
             p[clipboardDetect] = next.clipboardDetect
             p[clipboardSeen] = next.clipboardSeen.trim('\n')
+            p[proxyMode] = next.proxy.mode.takeIf { it in ProxyMode.all } ?: ProxyMode.SYSTEM
+            p[proxyType] = next.proxy.type.takeIf { it == ProxyType.SOCKS } ?: ProxyType.HTTP
+            p[proxyHost] = next.proxy.host.trim()
+            p[proxyPort] = next.proxy.port.coerceIn(0, 65535)
+            p[proxyUser] = next.proxy.username.trim()
+            p[proxyPassword] = next.proxy.password
+            p[proxyBypass] = ProxySettings.parseBypass(next.proxy.bypass).joinToString(",")
         }
     }
 }
@@ -208,11 +233,14 @@ class LeiFetchApp : Application() {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     lateinit var store: TaskStore
     lateinit var settings: Settings
+    lateinit var proxies: ProxyManager
     val telemetry = TransferTelemetryRegistry()
     val ready = CompletableDeferred<Unit>()
     override fun onCreate() {
         super.onCreate()
         settings = Settings(this, scope)
+        // 代理解析按每次请求现读设置：切换模式、自动探测结果与直连名单都立即生效。
+        proxies = ProxyManager(this) { settings.state.value.proxy }
         store = TaskStore(this)
         Notices.channels(this)
         scope.launch {
