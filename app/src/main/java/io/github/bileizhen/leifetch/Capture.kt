@@ -76,6 +76,7 @@ class HookEntry : IXposedHookLoadPackage {
     private val executor = ThreadPoolExecutor(1, 1, 30, TimeUnit.SECONDS, ArrayBlockingQueue(32))
     private var context: Context? = null
     private var preferences: RemotePreferences? = null
+    private var proxies: ProxyManager? = null
     private var preferenceListener: SharedPreferences.OnSharedPreferenceChangeListener? = null
     @Volatile private var enabled = false
     @Volatile private var genericEnabled = true
@@ -346,9 +347,10 @@ class HookEntry : IXposedHookLoadPackage {
                                 val headers = XposedHelpers.getObjectField(response, "headers") as? Map<String, String> ?: emptyMap()
                                 probing.set(true)
                                 try {
+                                    // 浏览器进程读不到 LeiFetch 的 DataStore，代理配置经 hook 偏好传递。
                                     val verified = FirefoxProbe.verify(url, headers, onRejected = { reason ->
                                         XposedBridge.log("LeiFetch Firefox：$reason，保留 Firefox 下载")
-                                    }) ?: return@runCatching false
+                                    }, proxy = proxyManager()?.forUrl(url)) ?: return@runCatching false
                                     val name = URLUtil.guessFileName(url, FirefoxProbe.header(headers, "Content-Disposition"),
                                         FirefoxProbe.header(headers, "Content-Type"))
                                     val ok = capture(verified.url, emptyMap(), name, "Firefox 插件接管", verified.totalLength)
@@ -370,6 +372,14 @@ class HookEntry : IXposedHookLoadPackage {
     private fun submit(url: String, headers: Map<String, String>, name: String?, entry: String,
                        expectedSize: Long = -1) {
         queue { capture(url, headers, name ?: URLUtil.guessFileName(url, null, null), entry, expectedSize) }
+    }
+    /** 宿主进程内的代理管理器：配置从 hook 偏好读取，自动探测结果按进程缓存。 */
+    private fun proxyManager(): ProxyManager? {
+        proxies?.let { return it }
+        val c = context ?: return null
+        return ProxyManager(c) {
+            ProxySettings.decode(runCatching { preferences?.getString("proxy", null) }.getOrNull())
+        }.also { proxies = it }
     }
     private fun capture(url: String, headers: Map<String, String>, name: String, entry: String,
                         expectedSize: Long = -1): Boolean {

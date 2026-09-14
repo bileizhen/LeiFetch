@@ -1,6 +1,7 @@
 package io.github.bileizhen.leifetch
 
 import java.net.HttpURLConnection
+import java.net.Proxy
 import java.net.URL
 
 /** Firefox GeckoView 外部响应的独立探测；不依赖 Xposed，可在 JVM 与设备上测试。 */
@@ -11,9 +12,10 @@ object FirefoxProbe {
      * 验证公开 HTTP(S) 下载能独立获取。200 / 未知大小 / 缺失或弱 ETag 均可接管；
      * 分段与续传能力由下载内核判定。已有的版本、长度矛盾，以及登录页、错误响应仍回退。
      * 只探测响应头，不消费文件内容；不读取或转发浏览器 Cookie。
+     * [proxy] 与下载内核使用同一套代理解析，null 表示直连。
      */
     fun verify(rawUrl: String, geckoHeaders: Map<String, String>, connectTimeoutMs: Int = 4000,
-               onRejected: (String) -> Unit = {}): Verified? {
+               onRejected: (String) -> Unit = {}, proxy: Proxy? = null): Verified? {
         fun reject(reason: String): Verified? { onRejected(reason); return null }
         var url = runCatching { URL(rawUrl) }.getOrNull() ?: return reject("下载地址无效")
         if (!supported(url)) return reject("非 HTTP(S) 地址或地址含认证信息")
@@ -27,7 +29,7 @@ object FirefoxProbe {
             if (remaining <= 0) return reject("下载探测超时")
             var connection: HttpURLConnection? = null
             try {
-                val c = (url.openConnection() as HttpURLConnection).also { connection = it }
+                val c = (url.openConnection(proxy ?: Proxy.NO_PROXY) as HttpURLConnection).also { connection = it }
                 c.instanceFollowRedirects = false
                 c.useCaches = false
                 c.connectTimeout = remaining
